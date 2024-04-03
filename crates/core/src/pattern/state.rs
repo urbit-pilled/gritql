@@ -4,9 +4,7 @@ use std::ops::Range as StdRange;
 
 use super::compiler::MATCH_VAR;
 use super::FileOwner;
-use crate::binding::log_empty_field_rewrite_error;
 use crate::intervals::{earliest_deadline_sort, get_top_level_intervals_in_range, Interval};
-use crate::suppress::is_binding_suppressed;
 use anyhow::{anyhow, Result};
 use anyhow::{bail, Ok};
 use im::{vector, Vector};
@@ -94,18 +92,13 @@ fn get_top_level_effect_ranges<'a>(
         .filter(|effect| {
             let binding = &effect.binding;
             if let Some(src) = binding.source() {
-                let _ = log_empty_field_rewrite_error(
-                    &binding.position(),
-                    &effect.binding,
-                    language,
-                    logs,
-                );
-                range.equal_address(src)
-                    && binding.position().is_some()
-                    && !matches!(
-                        memo.get(&CodeRange::from_range(src, binding.position().unwrap())),
-                        Some(None)
-                    )
+                if let Some(position) = binding.position() {
+                    range.equal_address(src)
+                        && !matches!(memo.get(&CodeRange::from_range(src, position)), Some(None))
+                } else {
+                    let _ = binding.log_empty_field_rewrite_error(language, logs);
+                    false
+                }
             } else {
                 false
             }
@@ -237,7 +230,7 @@ impl<'a> State<'a> {
     pub(crate) fn bindings_history_to_ranges(
         &self,
         lang: &TargetLanguage,
-        current_name: &Option<String>,
+        current_name: Option<&str>,
     ) -> (Vec<VariableMatch>, Vec<Range>, bool) {
         let mut matches = vec![];
         let mut top_level_matches = vec![];
@@ -252,9 +245,7 @@ impl<'a> State<'a> {
                     if let ResolvedPattern::Binding(bindings) = value {
                         for binding in bindings.iter() {
                             bindings_count += 1;
-                            if is_binding_suppressed(binding, lang, current_name)
-                                .unwrap_or_default()
-                            {
+                            if binding.is_suppressed(lang, current_name) {
                                 suppressed_count += 1;
                                 continue;
                             }

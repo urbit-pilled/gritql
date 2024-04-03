@@ -3,9 +3,9 @@ use super::{
     container::{PatternOrResolved, PatternOrResolvedMut},
     patterns::{Matcher, Name},
     resolved_pattern::ResolvedPattern,
-    Context, State,
+    State,
 };
-use crate::{binding::Binding, equivalence::are_bindings_equivalent};
+use crate::{binding::Binding, context::Context};
 use anyhow::{bail, Result};
 use core::fmt::Debug;
 use im::vector;
@@ -137,7 +137,7 @@ impl Variable {
                             if let (Some(var_binding), Some(binding)) =
                                 (bindings.last(), cur_bindings.last())
                             {
-                                if !are_bindings_equivalent(var_binding, binding) {
+                                if !var_binding.is_equivalent_to(binding) {
                                     return Ok(Some(false));
                                 }
                                 let value_history = &mut variable_content.value_history;
@@ -276,7 +276,7 @@ fn register_variable_optional_range(
         }
         return Ok(Variable::new(GLOBAL_VARS_SCOPE_INDEX, *i));
     }
-    let (name_map, scope_index) = if name.starts_with("$GLOBAL_") {
+    let (name_map, scope_index) = if name.starts_with("$GLOBAL_") || name.starts_with("^GLOBAL_") {
         (global_vars, GLOBAL_VARS_SCOPE_INDEX)
     } else {
         (vars, scope_index)
@@ -313,7 +313,7 @@ impl Matcher for Variable {
         &'a self,
         resolved_pattern: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         if let Some(res) = self.execute_resolved(resolved_pattern, state)? {

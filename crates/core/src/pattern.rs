@@ -25,7 +25,7 @@ mod every;
 mod file_pattern;
 mod files;
 mod float_constant;
-mod function_definition;
+pub mod function_definition;
 mod functions;
 mod r#if;
 mod includes;
@@ -44,9 +44,9 @@ mod multiply;
 pub mod not;
 pub mod or;
 mod paths;
-mod pattern_definition;
+pub mod pattern_definition;
 pub mod patterns;
-mod predicate_definition;
+pub mod predicate_definition;
 mod predicate_return;
 mod predicates;
 mod range;
@@ -66,6 +66,7 @@ mod r#where;
 mod within;
 use crate::{
     binding::Binding,
+    context::Context,
     pattern::{compiler::DEFAULT_FILE_NAME, patterns::Matcher, resolved_pattern::ResolvedPattern},
 };
 use ::log::error;
@@ -108,7 +109,7 @@ use variable::VariableSourceLocations;
 
 use self::{
     api::{is_match, AnalysisLog, ByteRange, DoneFile, MatchResult},
-    built_in_functions::BuiltIns,
+    built_in_functions::{BuiltIns, CallBuiltIn},
     compiler::NEW_FILES_INDEX,
     function_definition::{ForeignFunctionDefinition, GritFunctionDefinition},
     paths::absolutize,
@@ -214,8 +215,8 @@ impl MatchRanges {
 
 #[derive(Debug, Clone)]
 pub struct FileOwner {
-    absolute_path: String,
-    name: String,
+    absolute_path: PathBuf,
+    name: PathBuf,
     // todo wrap in Rc<RefCell<Option<>>>
     // so that we can lazily parse
     tree: Tree,
@@ -226,23 +227,28 @@ pub struct FileOwner {
 
 impl FileOwner {
     pub(crate) fn new(
-        name: String,
+        name: impl Into<PathBuf>,
         source: String,
         matches: Option<MatchRanges>,
         new: bool,
         language: &impl Language,
         logs: &mut AnalysisLogs,
-    ) -> Result<Self> {
-        let tree = language.parse_file(&name, &source, logs, new)?;
-        let absolute_path = absolutize(&name)?;
-        Ok(FileOwner {
+    ) -> Result<Option<Self>> {
+        let name = name.into();
+        let Some(tree) =
+            language.parse_file(name.to_string_lossy().as_ref(), &source, logs, new)?
+        else {
+            return Ok(None);
+        };
+        let absolute_path = PathBuf::from(absolutize(name.to_string_lossy().as_ref())?);
+        Ok(Some(FileOwner {
             name,
             absolute_path,
             tree,
             source,
             matches: matches.unwrap_or_default().into(),
             new,
-        })
+        }))
     }
 }
 
@@ -402,8 +408,10 @@ impl Problem {
                     );
                     match owned_file {
                         Result::Ok(owned_file) => {
-                            file_pointers.push(FilePtr::new(file_pointers.len() as u16, 0));
-                            owned_files.push(owned_file);
+                            if let Some(owned_file) = owned_file {
+                                file_pointers.push(FilePtr::new(file_pointers.len() as u16, 0));
+                                owned_files.push(owned_file);
+                            }
                             done_files.push(MatchResult::DoneFile(DoneFile {
                                 relative_file_path: file.path.to_string(),
                                 has_results: None,
@@ -653,7 +661,7 @@ impl Problem {
     ) -> Result<Vec<MatchResult>> {
         let mut user_logs = vec![].into();
 
-        let context = Context::new(
+        let context = MarzanoContext::new(
             &self.pattern_definitions,
             &self.predicate_definitions,
             &self.function_definitions,
@@ -767,11 +775,11 @@ impl Debug for FileOwners {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.0
             .iter()
-            .try_fold((), |_, file| writeln!(f, "{}", file.name))
+            .try_fold((), |_, file| writeln!(f, "{}", file.name.display()))
     }
 }
 
-pub struct Context<'a> {
+pub struct MarzanoContext<'a> {
     pub pattern_definitions: &'a Vec<PatternDefinition>,
     pub predicate_definitions: &'a Vec<PredicateDefinition>,
     pub function_definitions: &'a Vec<GritFunctionDefinition>,
@@ -783,7 +791,7 @@ pub struct Context<'a> {
     pub name: Option<String>,
 }
 
-impl<'a> Context<'a> {
+impl<'a> MarzanoContext<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pattern_definitions: &'a Vec<PatternDefinition>,
@@ -807,5 +815,66 @@ impl<'a> Context<'a> {
             runtime,
             name,
         }
+    }
+}
+
+impl<'a> Context for MarzanoContext<'a> {
+    fn pattern_definitions(&self) -> &[PatternDefinition] {
+        self.pattern_definitions
+    }
+
+    fn predicate_definitions(&self) -> &[PredicateDefinition] {
+        self.predicate_definitions
+    }
+
+    fn function_definitions(&self) -> &[GritFunctionDefinition] {
+        self.function_definitions
+    }
+
+    fn foreign_function_definitions(&self) -> &[ForeignFunctionDefinition] {
+        self.foreign_function_definitions
+    }
+
+    fn ignore_limit_pattern(&self) -> bool {
+        self.runtime.ignore_limit_pattern
+    }
+
+    fn call_built_in<'b>(
+        &self,
+        call: &'b CallBuiltIn,
+        context: &'b Self,
+        state: &mut State<'b>,
+        logs: &mut AnalysisLogs,
+    ) -> Result<ResolvedPattern<'b>> {
+        self.built_ins.call(call, context, state, logs)
+    }
+
+    #[cfg(all(
+        feature = "network_requests_external",
+        feature = "external_functions_ffi",
+        not(feature = "network_requests"),
+        target_arch = "wasm32"
+    ))]
+    fn exec_external(
+        &self,
+        code: &[u8],
+        param_names: Vec<String>,
+        input_bindings: &[&str],
+    ) -> Result<Vec<u8>> {
+        (self.runtime.exec_external)(code, param_names, input_bindings)
+    }
+
+    // FIXME: Don't depend on Grit's file handling in context.
+    fn files(&self) -> &FileOwners {
+        self.files
+    }
+
+    // FIXME: This introduces a dependency on TreeSitter.
+    fn language(&self) -> &TargetLanguage {
+        self.language
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 }

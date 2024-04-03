@@ -1,4 +1,4 @@
-use crate::binding::{Binding, Constant};
+use crate::{binding::Constant, context::Context};
 use itertools::Itertools;
 use marzano_util::analysis_logs::AnalysisLogs;
 use rand::prelude::SliceRandom;
@@ -11,10 +11,10 @@ use super::{
     paths::resolve,
     patterns::{Name, Pattern},
     resolved_pattern::{
-        patterns_to_resolved, JoinFn, LazyBuiltIn, ListBinding, ResolvedPattern, ResolvedSnippet,
+        patterns_to_resolved, JoinFn, LazyBuiltIn, ResolvedPattern, ResolvedSnippet,
     },
     variable::get_absolute_file_name,
-    Context, State,
+    MarzanoContext, State,
 };
 use anyhow::{anyhow, bail, Result};
 use im::vector;
@@ -56,10 +56,10 @@ impl GritCall for CallBuiltIn {
     fn call<'a>(
         &'a self,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<ResolvedPattern<'a>> {
-        context.built_ins.call(self, state, context, logs)
+        context.call_built_in(self, context, state, logs)
     }
 }
 
@@ -75,7 +75,7 @@ impl Name for CallBuiltIn {
 
 type F = dyn for<'a> Fn(
         &'a [Option<Pattern>],
-        &Context<'a>,
+        &'a MarzanoContext<'a>,
         &mut State<'a>,
         &mut AnalysisLogs,
     ) -> Result<ResolvedPattern<'a>>
@@ -92,8 +92,8 @@ impl BuiltInFunction {
     fn call<'a>(
         &self,
         args: &'a [Option<Pattern>],
+        context: &'a MarzanoContext<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
         logs: &mut AnalysisLogs,
     ) -> Result<ResolvedPattern<'a>> {
         (self.func)(args, context, state, logs)
@@ -120,11 +120,11 @@ impl BuiltIns {
     pub(crate) fn call<'a>(
         &self,
         call: &'a CallBuiltIn,
+        context: &'a MarzanoContext<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
         logs: &mut AnalysisLogs,
     ) -> Result<ResolvedPattern<'a>> {
-        self.0[call.index].call(&call.args, state, context, logs)
+        self.0[call.index].call(&call.args, context, state, logs)
     }
 
     pub fn extend_builtins(&mut self, other: BuiltIns) -> Result<()> {
@@ -181,7 +181,7 @@ impl From<Vec<BuiltInFunction>> for BuiltIns {
 /// Turn an arbitrary path into a resolved and normalized absolute path
 fn resolve_path_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -208,7 +208,7 @@ fn capitalize(s: &str) -> String {
 
 fn capitalize_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -223,7 +223,7 @@ fn capitalize_fn<'a>(
 
 fn lowercase_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -238,7 +238,7 @@ fn lowercase_fn<'a>(
 
 fn uppercase_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -253,22 +253,22 @@ fn uppercase_fn<'a>(
 
 fn text_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
     let args = patterns_to_resolved(args, state, context, logs)?;
 
-    let s = match &args[0] {
-        Some(resolved_pattern) => resolved_pattern.text(&state.files)?,
-        None => return Err(anyhow!("text takes 1 argument")),
+    let s = match args.first() {
+        Some(Some(resolved_pattern)) => resolved_pattern.text(&state.files)?,
+        _ => return Err(anyhow!("text takes 1 argument")),
     };
     Ok(ResolvedPattern::from_string(s.to_string()))
 }
 
 fn trim_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -292,7 +292,7 @@ fn trim_fn<'a>(
 
 fn split_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -317,13 +317,13 @@ fn split_fn<'a>(
 
 fn random_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
     let args = patterns_to_resolved(args, state, context, logs)?;
 
-    match &args[..] {
+    match args.as_slice() {
         [Some(start), Some(end)] => {
             let start = start.text(&state.files)?;
             let end = end.text(&state.files)?;
@@ -349,7 +349,7 @@ fn random_fn<'a>(
 
 fn join_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -366,13 +366,10 @@ fn join_fn<'a>(
         Some(ResolvedPattern::List(list)) => {
             JoinFn::from_resolved(list.to_owned(), separator.to_string())
         }
-        Some(ResolvedPattern::Binding(binding)) => match binding.last() {
-            Some(Binding::List(src, parent_node, field)) => {
-                let list = ListBinding::new(src, parent_node.clone(), *field);
-                JoinFn::from_binding(list, separator.to_string())
-            }
-            _ => bail!("join takes a list as the first argument"),
-        },
+        Some(ResolvedPattern::Binding(binding)) => binding
+            .last()
+            .and_then(|b| JoinFn::from_list_binding(b, separator.to_string()))
+            .ok_or_else(|| anyhow!("join takes a list as the first argument"))?,
         _ => bail!("join takes a list as the first argument"),
     };
     let snippet = ResolvedSnippet::LazyFn(Box::new(LazyBuiltIn::Join(join)));
@@ -381,7 +378,7 @@ fn join_fn<'a>(
 
 fn distinct_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -399,28 +396,20 @@ fn distinct_fn<'a>(
             Ok(ResolvedPattern::List(unique_list))
         }
         Some(ResolvedPattern::Binding(binding)) => match binding.last() {
-            Some(b) => match b {
-                Binding::List(src, parent_node, field_id) => {
+            Some(b) => {
+                if let Some(list_items) = b.list_items() {
                     let mut unique_list = Vector::new();
-                    for child in parent_node
-                        .children_by_field_id(*field_id, &mut parent_node.walk())
-                        .filter(|child| child.is_named())
-                    {
-                        let resolved = ResolvedPattern::from_node(src, child);
+                    for item in list_items {
+                        let resolved = ResolvedPattern::from_node(item);
                         if !unique_list.contains(&resolved) {
                             unique_list.push_back(resolved);
                         }
                     }
                     Ok(ResolvedPattern::List(unique_list))
-                }
-                Binding::String(..)
-                | Binding::FileName(_)
-                | Binding::Node(..)
-                | Binding::Empty(..)
-                | Binding::ConstantRef(_) => {
+                } else {
                     bail!("distinct takes a list as the first argument")
                 }
-            },
+            }
             None => Ok(ResolvedPattern::Binding(binding)),
         },
         _ => Err(anyhow!("distinct takes a list as the first argument")),
@@ -430,11 +419,12 @@ fn distinct_fn<'a>(
 // Shuffle a list
 fn shuffle_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
     let args = patterns_to_resolved(args, state, context, logs)?;
+
     let list = args
         .into_iter()
         .next()
@@ -450,19 +440,17 @@ fn shuffle_fn<'a>(
             Ok(ResolvedPattern::List(shuffled_list.into()))
         }
         ResolvedPattern::Binding(binding) => match binding.last() {
-            Some(Binding::List(src, parent_node, field_id)) => {
-                let mut list = parent_node
-                    .children_by_field_id(*field_id, &mut parent_node.walk())
-                    .filter(|child| child.is_named())
-                    .collect::<Vec<_>>();
-                list.shuffle(state.get_rng());
-                let list = list
-                    .into_iter()
-                    .map(|child| ResolvedPattern::from_node(src, child))
-                    .collect::<Vector<_>>();
-                Ok(ResolvedPattern::List(list))
+            Some(b) => {
+                if let Some(list_items) = b.list_items() {
+                    let mut list: Vec<_> = list_items.collect();
+                    list.shuffle(state.get_rng());
+                    let list: Vector<_> =
+                        list.into_iter().map(ResolvedPattern::from_node).collect();
+                    Ok(ResolvedPattern::List(list))
+                } else {
+                    Err(anyhow!("shuffle takes a list as the first argument"))
+                }
             }
-            Some(_) => Err(anyhow!("shuffle takes a list as the first argument")),
             None => Err(anyhow!("shuffle argument must be bound")),
         },
         ResolvedPattern::Snippets(_)
@@ -477,7 +465,7 @@ fn shuffle_fn<'a>(
 
 fn length_fn<'a>(
     args: &'a [Option<Pattern>],
-    context: &Context<'a>,
+    context: &'a MarzanoContext<'a>,
     state: &mut State<'a>,
     logs: &mut AnalysisLogs,
 ) -> Result<ResolvedPattern<'a>> {
@@ -490,16 +478,12 @@ fn length_fn<'a>(
             Ok(ResolvedPattern::Constant(Constant::Integer(length as i64)))
         }
         Some(ResolvedPattern::Binding(binding)) => match binding.last() {
-            Some(Binding::List(_, parent_node, field_id)) => {
-                let length = parent_node
-                    .children_by_field_id(*field_id, &mut parent_node.walk())
-                    .filter(|child| child.is_named())
-                    .count();
-                Ok(ResolvedPattern::Constant(Constant::Integer(length as i64)))
-            }
             Some(resolved_pattern) => {
-                let text = resolved_pattern.text();
-                let length = text.len();
+                let length = if let Some(list_items) = resolved_pattern.list_items() {
+                    list_items.count()
+                } else {
+                    resolved_pattern.text().len()
+                };
                 Ok(ResolvedPattern::Constant(Constant::Integer(length as i64)))
             }
             None => Err(anyhow!("length argument must be a list or string")),

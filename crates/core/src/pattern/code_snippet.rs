@@ -1,22 +1,21 @@
-use crate::{binding::Binding, resolve};
-
 use super::{
     dynamic_snippet::{DynamicPattern, DynamicSnippet},
     patterns::{Matcher, Name, Pattern},
     resolved_pattern::ResolvedPattern,
     variable::{register_variable, VariableSourceLocations},
-    Context, State,
+    State,
 };
+use crate::{context::Context, resolve};
 use anyhow::{anyhow, bail, Result};
 use core::fmt::Debug;
-use marzano_util::{analysis_logs::AnalysisLogs, position::Range};
-use std::collections::BTreeMap;
-use tree_sitter::Node;
-
 use marzano_language::{
     language::{nodes_from_indices, Language, SortId},
     target_language::TargetLanguage,
 };
+use marzano_util::{analysis_logs::AnalysisLogs, position::Range};
+use std::collections::BTreeMap;
+use tree_sitter::Node;
+
 #[derive(Debug, Clone)]
 pub struct CodeSnippet {
     pub(crate) patterns: Vec<(SortId, Pattern)>,
@@ -102,7 +101,7 @@ impl Matcher for CodeSnippet {
         &'a self,
         resolved_pattern: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         let binding = match resolved_pattern {
@@ -117,28 +116,15 @@ impl Matcher for CodeSnippet {
             }
         };
 
-        let node = match binding {
-            Binding::Empty(_, _, _) => return Ok(false),
-            Binding::Node(_, node) => node.to_owned(),
-            // maybe String should instead be fake node? eg for comment_content
-            Binding::String(_, _) => return Ok(false),
-            Binding::List(_, node, id) => {
-                let mut cursor = node.walk();
-                let mut list = node.children_by_field_id(*id, &mut cursor);
-                if let Some(child) = list.next() {
-                    if list.next().is_some() {
-                        return Ok(false);
-                    }
-                    child
-                } else {
-                    return Ok(false);
-                }
-            }
-            Binding::FileName(_) => return Ok(false),
-            Binding::ConstantRef(_) => return Ok(false),
+        let Some(node) = binding.singleton() else {
+            return Ok(false);
         };
 
-        if let Some((_, pattern)) = self.patterns.iter().find(|(id, _)| *id == node.kind_id()) {
+        if let Some((_, pattern)) = self
+            .patterns
+            .iter()
+            .find(|(id, _)| *id == node.node.kind_id())
+        {
             pattern.execute(resolved_pattern, state, context, logs)
         } else {
             Ok(false)
@@ -190,6 +176,7 @@ fn process_snippet_content(
         if lang.exact_variable_regex().is_match(source.trim()) {
             match source.trim() {
                 "$_" => return Ok(Pattern::Underscore),
+                "^_" => return Ok(Pattern::Underscore),
                 name => {
                     let var = register_variable(
                         name,
@@ -348,7 +335,7 @@ fn language_specific_snippet(
         .child_by_field_name("language")
         .ok_or_else(|| anyhow!("missing language of languageSpecificSnippet"))?;
     let lang_name = lang_node.utf8_text(src.as_bytes())?.trim().to_string();
-    let _snippet_lang = TargetLanguage::from_string(&lang_name, &[])
+    let _snippet_lang = TargetLanguage::from_string(&lang_name, None)
         .ok_or_else(|| anyhow!("invalid language: {}", lang_name))?;
     let snippet_node = node
         .child_by_field_name("snippet")

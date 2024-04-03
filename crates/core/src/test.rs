@@ -2911,6 +2911,74 @@ fn hcl_implicit_regex() {
 }
 
 #[test]
+fn includes_regex() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language js
+                |
+                |`console.log($_)` as $haystack where {
+                |   $haystack <: includes r"Hello"
+                |} => `console.log("Goodbye world!")`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |console.log("Hello world!");
+                |console.log("Hello handsome!");
+                |console.log("But not me, sadly.");
+                |console.log("Hi, Hello world!");
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |console.log("Goodbye world!");
+                |console.log("Goodbye world!");
+                |console.log("But not me, sadly.");
+                |console.log("Goodbye world!");
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn includes_regex_with_capture() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language js
+                |
+                |`console.log($_)` as $haystack where {
+                |   $haystack <: includes r"Hello (\w+)"($name)
+                |} => `console.log("Goodbye $name!")`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |console.log("Hello world!");
+                |console.log("Hello handsome!");
+                |console.log("But not me, sadly.");
+                |console.log("Hi, Hello world!");
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |console.log("Goodbye world!");
+                |console.log("Goodbye handsome!");
+                |console.log("But not me, sadly.");
+                |console.log("Goodbye world!");
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
 fn parses_simple_pattern() {
     let pattern = r#"
         |engine marzano(0.1)
@@ -2927,7 +2995,7 @@ fn parses_simple_pattern() {
 fn warning_rewrite_in_not() {
     let pattern = r#"
         |`async ($args) => { $body }` where {
-        |    $body <: not contains `try` => ` try { 
+        |    $body <: not contains `try` => ` try {
         |        $body
         |    } catch { }`
         |}"#
@@ -7633,6 +7701,46 @@ fn multiply_decimals() {
 }
 
 #[test]
+fn python_removes_orphaned_type_arrow() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language python
+                |
+                |function_definition($name, $return_type) where {
+                |  $name <: `foo`,
+                |  $return_type => .
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |def foo() -> None:
+                |    print('hi')
+                |
+                |def bar() -> SomeType:
+                |    print('hello')
+                |    return SomeType
+                |"#
+            .trim_margin()
+            .unwrap(),
+            // The whitespace is fine, because Ruff will remove it
+            expected: r#"
+                |def foo()  :
+                |    print('hi')
+                |
+                |def bar() -> SomeType:
+                |    print('hello')
+                |    return SomeType
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
 fn removes_orphaned_semicolon() {
     run_test_expected({
         TestArgExpected {
@@ -10743,7 +10851,7 @@ fn rewrite_to_accessor_mut() {
                 |language js
                 |
                 |`const $x = $foo` where {
-                |   $cities = {}, 
+                |   $cities = {},
                 |   $kiel = `kiel`,
                 |   $cities.germany = $kiel,
                 |   $cities.italy = `"venice"`,
@@ -12720,6 +12828,437 @@ fn go_package_type() {
             |   return
             |}
             |"#
+        .trim_margin()
+        .unwrap(),
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_no_match() {
+    run_test_no_match({
+        TestArg {
+            pattern: r#"
+                |language php
+                |
+                |`TEST`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |echo "hello world"
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+
+#[test]
+fn php_simple_match() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`echo ^x;` => `^x + ^x;`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |echo "duplicate this message";
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |"duplicate this message" + "duplicate this message";
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_html_simple_match() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language php(html)
+                |
+                |`<?php
+                |   echo ^x;
+                |?>` where {
+                |   ^x => `^x + ^x`,
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |<?php
+                |   echo "duplicate this message";
+                |?>
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |<?php
+                |   echo "duplicate this message" + "duplicate this message";
+                |?>
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_html_multi_arg() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language php(html)
+                |
+                |`<?php
+                |   $cost = Array(^x);
+                |?>` where {
+                |   ^x => `100, 399, 249`,
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |<?php
+                |   $cost = Array(20, 10);
+                |?>
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |<?php
+                |   $cost = Array(100, 399, 249);
+                |?>
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_until() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |contains bubble `foo(^x)` => `bar(^x)` until `foo(^_)`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |   foo(another(foo(x)));
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |   bar(another(foo(x)));
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_quote_snippet_rewrite() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |php"foo" => php"bar"
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"$a = $foo;"#.to_owned(),
+            expected: r#"$a = $bar;"#.to_owned(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn php_if_statement() {
+    run_test_expected(
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`$a = 12;` => `$b=24;`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |#
+                |if (!$foo = $bar) {
+                |   $a = 12;
+                |}
+                |"#
+            .trim_margin().
+            unwrap(),
+            expected: r#"
+                |#
+                |if (!$foo = $bar) {
+                |   $b=24;
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    )
+    .unwrap();
+}
+
+#[test]
+fn php_delete_include() {
+    run_test_expected(
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`include ^package;` => .
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |include 'test.php';
+                |$test = "";
+                |"#
+            .trim_margin().
+            unwrap(),
+            expected: r#"
+                |
+                |$test = "";
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    )
+    .unwrap();
+}
+
+#[test]
+fn php_function_modifier() {
+    run_test_expected(
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`class ^_ { ^mod function ^name(){ ^_ } }` where {
+                |   ^mod => `private`,
+                |   ^name => `modified`,
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+            |class Log {
+            |   public function printHello()
+            |   {
+            |       echo $this->public;
+            |       echo $this->protected;
+            |       echo $this->private;
+            |   }
+            |}
+            |"#
+            .trim_margin().
+            unwrap(),
+            expected: r#"
+            |class Log {
+            |   private function modified()
+            |   {
+            |       echo $this->public;
+            |       echo $this->protected;
+            |       echo $this->private;
+            |   }
+            |}
+            |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    )
+    .unwrap();
+}
+
+#[test]
+fn php_rewrite_arrow_function() {
+    run_test_expected(
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`fn(^a) => ^_` => `fn(^a) => $x * $x`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: "$fn1 = fn($x) => $x + $y;"
+            .trim_margin().
+            unwrap(),
+            expected: "$fn1 = fn($x) => $x * $x;"
+            .trim_margin()
+            .unwrap(),
+        }
+    )
+    .unwrap();
+}
+
+#[test]
+fn php_array() {
+    run_test_expected(
+        TestArgExpected {
+            pattern: r#"
+                |language php
+                |
+                |`^a=>^_` => `^a=>24`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"$fn1 = array("a"=>1, "b"=>2, "c"=>3);"#
+            .trim_margin().
+            unwrap(),
+            expected: r#"$fn1 = array("a"=>24, "b"=>24, "c"=>24);"#
+            .trim_margin()
+            .unwrap(),
+        }
+    )
+    .unwrap();
+}
+
+
+#[test]
+fn css_property_value() {
+    run_test_match(TestArg {
+        pattern: r#"
+            |language css
+            |
+            |`var($a)`
+            |"#
+        .trim_margin()
+        .unwrap(),
+        source: r#"
+            |#some-id {
+            |    some-property: 5px;
+            |    color: var(--red)
+            |  }
+            |"#
+        .trim_margin()
+        .unwrap(),
+
+    })
+    .unwrap();
+}
+
+#[test]
+fn json_empty_string_should_not_match_everything() {
+    run_test_no_match(TestArg {
+        pattern: r#"
+            |engine marzano(0.1)
+            |language json
+            |
+            |`"x": ""`
+            |"#
+        .trim_margin()
+        .unwrap(),
+        source: r#"
+            |{
+            |  "x": "foo"
+            |}
+            |"#
+        .trim_margin()
+        .unwrap(),
+    })
+    .unwrap();
+}
+
+#[test]
+fn json_empty_string_should_match_self() {
+    run_test_match(TestArg {
+        pattern: r#"
+            |engine marzano(0.1)
+            |language json
+            |
+            |`"x": ""`
+            |"#
+        .trim_margin()
+        .unwrap(),
+        source: r#"
+            |{
+            |  "x": ""
+            |}
+            |"#
+        .trim_margin()
+        .unwrap(),
+    })
+    .unwrap();
+}
+
+#[test]
+fn limit_export_default_match() {
+    run_test_expected(TestArgExpected {
+        pattern: r#"
+            |language js
+            |
+            |`export default function $name() {}` where $name => `foo`
+            |"#
+        .trim_margin()
+        .unwrap(),
+        source: r#"
+            |export async function loader() {}
+            |export default function main() {}
+            |"#
+        .trim_margin()
+        .unwrap(),
+        expected: r#"
+        |export async function loader() {}
+        |export default function foo() {}
+        |"#
+        .trim_margin()
+        .unwrap(),
+    })
+    .unwrap();
+}
+
+#[test]
+fn python_support_empty_line() {
+    run_test_expected(TestArgExpected {
+        pattern: r#"
+            |engine marzano(0.1)
+            |language python
+            |`class $name: $body` => $body
+            |"#
+        .trim_margin()
+        .unwrap(),
+        source: r#"
+            |class MyClass:
+            |    def function(self):
+            |        result = 1 + 1
+            |
+            |        return result
+            |"#
+        .trim_margin()
+        .unwrap(),
+        expected: r#"
+        |def function(self):
+        |    result = 1 + 1
+        |
+        |    return result
+        |"#
         .trim_margin()
         .unwrap(),
     })

@@ -40,6 +40,8 @@ static YAML_LANGUAGE: OnceLock<Language> = OnceLock::new();
 static SQL_LANGUAGE: OnceLock<Language> = OnceLock::new();
 static VUE_LANGUAGE: OnceLock<Language> = OnceLock::new();
 static TOML_LANGUAGE: OnceLock<Language> = OnceLock::new();
+static PHP_LANGUAGE: OnceLock<Language> = OnceLock::new();
+static PHP_ONLY_LANGUAGE: OnceLock<Language> = OnceLock::new();
 
 #[wasm_bindgen(js_name = initializeTreeSitter)]
 pub async fn initialize_tree_sitter() -> Result<(), JsError> {
@@ -193,8 +195,13 @@ pub async fn match_pattern(
                 Ok(s) => Ok(s.into()),
                 Err(e) => {
                     // TODO: figure out why we don't get the real error here
-                    let unwrapped = e.as_string().unwrap_or_else(|| "unknown error, check console for details".to_string());
-                    Err(anyhow::anyhow!("Error calling external function: {}", unwrapped))
+                    let unwrapped = e
+                        .as_string()
+                        .unwrap_or_else(|| "unknown error, check console for details".to_string());
+                    Err(anyhow::anyhow!(
+                        "Error calling external function: {}",
+                        unwrapped
+                    ))
                 }
             }
         },
@@ -318,7 +325,10 @@ async fn get_language_for_tree(tree: &Tree, src: &str) -> Result<TargetLanguage,
     } else {
         if matches!(
             lang,
-            PatternLanguage::JavaScript | PatternLanguage::TypeScript | PatternLanguage::Tsx
+            PatternLanguage::JavaScript
+                | PatternLanguage::TypeScript
+                | PatternLanguage::Tsx
+                | PatternLanguage::Css
         ) {
             // javascript also parses vue files to look for javascript so
             // we need to initialize the Vue struct with a wasm parser
@@ -355,6 +365,8 @@ fn pattern_language_to_path(lang: &PatternLanguage) -> Result<String, JsError> {
         PatternLanguage::Sql => Ok("/tree-sitter-sql.wasm"),
         PatternLanguage::Vue => Ok("/tree-sitter-vue.wasm"),
         PatternLanguage::Toml => Ok("/tree-sitter-toml.wasm"),
+        PatternLanguage::Php => Ok("/tree-sitter-php.wasm"),
+        PatternLanguage::PhpOnly => Ok("/tree-sitter-php_only.wasm"),
         PatternLanguage::Universal => Err(JsError::new("Universal does not have a parser")),
     }?;
     let final_file = format!("{}{}", get_parser_path(), wasm_file);
@@ -397,6 +409,8 @@ fn get_lang_store(language: &PatternLanguage) -> Result<&'static OnceLock<Langua
         PatternLanguage::Sql => Ok(&SQL_LANGUAGE),
         PatternLanguage::Vue => Ok(&VUE_LANGUAGE),
         PatternLanguage::Toml => Ok(&TOML_LANGUAGE),
+        PatternLanguage::Php => Ok(&PHP_LANGUAGE),
+        PatternLanguage::PhpOnly => Ok(&PHP_ONLY_LANGUAGE),
         PatternLanguage::Universal => Err(JsError::new("Universal does not have a parser")),
     }
 }

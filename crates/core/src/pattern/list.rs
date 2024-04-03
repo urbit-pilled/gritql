@@ -1,8 +1,3 @@
-use core::fmt::Debug;
-use std::{borrow::Cow, collections::BTreeMap};
-
-use crate::binding::Binding;
-
 use super::{
     compiler::CompilationContext,
     list_index,
@@ -10,12 +5,15 @@ use super::{
     resolved_pattern::ResolvedPattern,
     state::State,
     variable::VariableSourceLocations,
-    Context,
 };
+use crate::context::Context;
 use anyhow::{anyhow, bail, Result};
+use core::fmt::Debug;
 use marzano_language::language::Field;
 use marzano_util::analysis_logs::AnalysisLogs;
+use std::{borrow::Cow, collections::BTreeMap};
 use tree_sitter::Node;
+
 #[derive(Debug, Clone)]
 pub struct List {
     pub patterns: Vec<Pattern>,
@@ -118,26 +116,21 @@ impl Matcher for List {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut super::state::State<'a>,
-        context: &super::Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         match binding {
             ResolvedPattern::Binding(v) => {
-                if let Some(Binding::List(src, node, field_id)) = v.last() {
-                    let mut cursor = node.walk();
+                let Some(list_items) = v.last().and_then(|b| b.list_items()) else {
+                    return Ok(false);
+                };
 
-                    let children_vec: Vec<Cow<ResolvedPattern>> = node
-                        .children_by_field_id(*field_id, &mut cursor)
-                        .filter(|n| n.is_named())
-                        .map(|node| Cow::Owned(ResolvedPattern::from_node(src, node)))
-                        .collect();
+                let children: Vec<Cow<ResolvedPattern>> = list_items
+                    .map(ResolvedPattern::from_node)
+                    .map(Cow::Owned)
+                    .collect();
 
-                    let children: &[Cow<ResolvedPattern>] = &children_vec;
-                    let patterns: &[Pattern] = &self.patterns;
-                    execute_assoc(patterns, children, state, context, logs)
-                } else {
-                    Ok(false)
-                }
+                execute_assoc(&self.patterns, &children, state, context, logs)
             }
             ResolvedPattern::List(patterns) => {
                 let patterns: Vec<Cow<ResolvedPattern<'_>>> =
@@ -157,7 +150,7 @@ fn execute_assoc<'a>(
     patterns: &'a [Pattern],
     children: &[Cow<ResolvedPattern<'a>>],
     current_state: &mut State<'a>,
-    context: &Context<'a>,
+    context: &'a impl Context,
     logs: &mut AnalysisLogs,
 ) -> Result<bool> {
     let mut working_state = current_state.clone();

@@ -1,17 +1,14 @@
-use anyhow::{anyhow, Result};
-use im::vector;
-use marzano_util::analysis_logs::AnalysisLogs;
-
-use crate::{binding::Binding, resolve};
-
 use super::{
     compiler::CompilationContext,
     patterns::{Matcher, Name, Pattern},
     resolved_pattern::ResolvedPattern,
     variable::VariableSourceLocations,
-    Context, State,
+    State,
 };
-
+use crate::{context::Context, resolve};
+use anyhow::{anyhow, Result};
+use im::vector;
+use marzano_util::analysis_logs::AnalysisLogs;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
 
@@ -62,7 +59,7 @@ impl Matcher for Every {
         &'a self,
         binding: &ResolvedPattern<'a>,
         init_state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         // might be necessary to clone init state at the top,
@@ -70,32 +67,21 @@ impl Matcher for Every {
         match binding {
             ResolvedPattern::Binding(bindings) => {
                 let binding = resolve!(bindings.last());
-                let pattern = &self.pattern;
+                let Some(list_items) = binding.list_items() else {
+                    return Ok(false);
+                };
 
-                match binding {
-                    Binding::Empty(_, _, _) => Ok(false),
-                    Binding::Node(_, _node) => Ok(false),
-                    Binding::String(_, _) => Ok(false),
-                    Binding::List(src, node, field_id) => {
-                        let mut cursor = node.walk();
-                        let children = node
-                            .children_by_field_id(*field_id, &mut cursor)
-                            .filter(|c| c.is_named());
-                        for child in children {
-                            if !pattern.execute(
-                                &ResolvedPattern::from_node(src, child),
-                                init_state,
-                                context,
-                                logs,
-                            )? {
-                                return Ok(false);
-                            }
-                        }
-                        Ok(true)
+                for item in list_items {
+                    if !self.pattern.execute(
+                        &ResolvedPattern::from_node(item),
+                        init_state,
+                        context,
+                        logs,
+                    )? {
+                        return Ok(false);
                     }
-                    Binding::ConstantRef(_) => Ok(false),
-                    Binding::FileName(_) => Ok(false),
                 }
+                Ok(true)
             }
             ResolvedPattern::List(elements) => {
                 let pattern = &self.pattern;

@@ -32,22 +32,24 @@ use super::{
     ast_node::ASTNode, bubble::Bubble, built_in_functions::CallBuiltIn, call::Call,
     code_snippet::CodeSnippet, contains::Contains, list::List, not::Not, or::Or, r#if::If,
     r#where::Where, rewrite::Rewrite, some::Some, string_constant::StringConstant,
-    variable::Variable, within::Within, Context, Node, State,
+    variable::Variable, within::Within, Node, State,
 };
+use marzano_util::node_with_source::NodeWithSource;
+use crate::context::Context;
 use crate::pattern::register_variable;
 use crate::pattern::string_constant::AstLeafNode;
 use anyhow::{anyhow, bail, Result};
 use core::fmt::Debug;
+use grit_util::{traverse, Order, AstNode};
 use marzano_language::language::{Field, GritMetaValue};
 use marzano_language::{language::Language, language::SnippetNode};
 use marzano_util::analysis_logs::AnalysisLogs;
 use marzano_util::cursor_wrapper::CursorWrapper;
 use marzano_util::position::{char_index_to_byte_index, Position, Range};
-use regex::{Match, Regex};
+use regex::Match;
 use std::collections::{BTreeMap, HashMap};
 use std::str;
 use std::vec;
-use tree_sitter_traversal::{traverse, Order};
 
 pub(crate) trait Matcher: Debug {
     // it is important that any implementors of Pattern
@@ -57,7 +59,7 @@ pub(crate) trait Matcher: Debug {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool>;
 
@@ -301,13 +303,13 @@ fn node_sub_variables(node: Node, lang: &impl Language, text: &str) -> Vec<Range
 
 fn metavariable_ranges(node: &Node, lang: &impl Language, text: &str) -> Vec<Range> {
     let cursor = node.walk();
-    traverse(CursorWrapper::from(cursor), Order::Pre)
+    traverse(CursorWrapper::new(cursor, text), Order::Pre)
         .flat_map(|n| {
-            if is_metavariable(&n, lang, text.as_bytes()) {
-                let range: Range = n.range().into();
+            if is_metavariable(&n.node, lang, text.as_bytes()) {
+                let range: Range = n.node.range().into();
                 vec![range]
             } else {
-                node_sub_variables(n, lang, text)
+                node_sub_variables(n.node, lang, text)
             }
         })
         .collect()
@@ -409,8 +411,8 @@ fn implicit_metavariable_regex(
             &text[last as usize..range.end_byte as usize],
         ));
     }
-    let regex = format!("^{}$", regex_string);
-    let regex = RegexLike::Regex(Regex::new(regex.as_str())?);
+    let regex = regex_string.to_string();
+    let regex = RegexLike::Regex(regex);
     Ok(Some(RegexPattern::new(regex, variables)))
 }
 
@@ -481,7 +483,7 @@ impl Pattern {
             }
             if node_types[sort as usize].is_empty() {
                 let content = node.utf8_text(text)?;
-                if node.named_child_count() == 0
+                if (node.named_child_count() == 0)
                     && lang.replaced_metavariable_regex().is_match(&content)
                 {
                     let regex = implicit_metavariable_regex(
@@ -505,7 +507,7 @@ impl Pattern {
                 )?));
             }
             let fields: &Vec<Field> = &node_types[sort as usize];
-            let args = fields
+            let mut args = fields
                 .iter()
                 .filter(|field| {
                     node.child_by_field_id(field.id()).is_some()
@@ -538,14 +540,18 @@ impl Pattern {
                             )
                         })
                         .collect::<Result<Vec<Pattern>>>()?;
-                    // assumes that non multiple field has exactly one element
+
                     // TODO check if Pattern is Dots, and error at compile time,
                     // dots only makes sense in a list.
-                    if !field.multiple() {
-                        let lang = lang.get_ts_language();
-                        let field_name = lang.field_name_for_id(field_id).unwrap();
-                        let message = format!("field {} was empty!", field_name);
-                        return Ok((field_id, false, nodes_list.pop().expect(&message)));
+                    if !field.multiple() {    
+                        if nodes_list.len() == 1 {
+                            return Ok((field_id, false, nodes_list.pop().unwrap()));
+                        }
+                        let field_node = node.child_by_field_id(field_id).unwrap();
+                        let field_node_with_source = NodeWithSource::new(field_node.clone(), str::from_utf8(text).unwrap());
+                        return Ok((field_id, false,  Pattern::AstLeafNode(AstLeafNode::new(
+                            field_node.kind_id(), field_node_with_source.text(), lang,
+                        )?)));
                     }
                     if nodes_list.len() == 1
                         && matches!(
@@ -562,6 +568,31 @@ impl Pattern {
                     ))
                 })
                 .collect::<Result<Vec<(u16, bool, Pattern)>>>()?;
+            let mut mandatory_empty_args = fields
+                .iter()
+                .filter(|field| {
+                    node.child_by_field_id(field.id()).is_none()
+                        && lang.mandatory_empty_field(sort, field.id())
+                })
+                .map(|field| {
+                    if field.multiple() {
+                        (
+                            field.id(),
+                            true,
+                            Pattern::List(Box::new(List::new(Vec::new()))),
+                        )
+                    } else {
+                        (
+                            field.id(),
+                            false,
+                            Pattern::Dynamic(DynamicPattern::Snippet(DynamicSnippet {
+                                parts: vec![DynamicSnippetPart::String("".to_string())],
+                            })),
+                        )
+                    }
+                })
+                .collect::<Vec<(u16, bool, Pattern)>>();
+            args.append(&mut mandatory_empty_args);
             Ok(Pattern::ASTNode(Box::new(ASTNode { sort, args })))
         }
         node_to_astnode(
@@ -583,7 +614,7 @@ impl Pattern {
     pub fn text<'a>(
         &'a self,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<String> {
         Ok(ResolvedPattern::from_pattern(self, state, context, logs)?
@@ -594,7 +625,7 @@ impl Pattern {
     pub(crate) fn float<'a>(
         &'a self,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<f64> {
         ResolvedPattern::from_pattern(self, state, context, logs)?.float(&state.files)
@@ -1049,7 +1080,7 @@ impl Matcher for Pattern {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         if let ResolvedPattern::File(file) = &binding {

@@ -1306,6 +1306,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "grit-util"
+version = "0.1.0"
+
+[[package]]
 name = "grit_cache"
 version = "0.1.0"
 dependencies = [
@@ -1915,7 +1919,6 @@ dependencies = [
  "dialoguer",
  "env_logger",
  "flate2",
- "futures",
  "git2",
  "grit_cache",
  "ignore",
@@ -1957,6 +1960,7 @@ dependencies = [
  "elsa",
  "embeddings",
  "getrandom",
+ "grit-util",
  "im",
  "insta",
  "itertools 0.10.5",
@@ -1978,7 +1982,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tree-sitter-facade-sg",
  "tree-sitter-gritql",
- "tree-sitter-traversal",
  "trim-margin",
  "walkdir",
 ]
@@ -2022,12 +2025,15 @@ name = "marzano-language"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "enum_dispatch",
+ "grit-util",
  "ignore",
  "itertools 0.10.5",
  "lazy_static",
  "marzano-util",
  "regex",
+ "serde",
  "serde_json",
  "tree-sitter-c-sharp",
  "tree-sitter-css",
@@ -2040,13 +2046,13 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-json",
  "tree-sitter-md",
+ "tree-sitter-php",
  "tree-sitter-python",
  "tree-sitter-ruby",
  "tree-sitter-rust",
  "tree-sitter-solidity",
  "tree-sitter-sql",
  "tree-sitter-toml",
- "tree-sitter-traversal",
  "tree-sitter-typescript",
  "tree-sitter-vue",
  "tree-sitter-yaml",
@@ -2096,6 +2102,7 @@ dependencies = [
  "base64",
  "derive_builder",
  "futures",
+ "grit-util",
  "http",
  "ignore",
  "log",
@@ -2105,7 +2112,6 @@ dependencies = [
  "sha2",
  "tokio",
  "tree-sitter-facade-sg",
- "tree-sitter-traversal",
 ]
 
 [[package]]
@@ -3853,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-html"
-version = "0.20.0"
+version = "0.20.2"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -3886,6 +3892,14 @@ dependencies = [
 [[package]]
 name = "tree-sitter-md"
 version = "0.1.7"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-php"
+version = "0.22.2"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -3938,12 +3952,6 @@ dependencies = [
  "cc",
  "tree-sitter",
 ]
-
-[[package]]
-name = "tree-sitter-traversal"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df8a158225e4a4d8505f071340bba9edd109b23f01b70540dccb7c799868f307"
 
 [[package]]
 name = "tree-sitter-typescript"

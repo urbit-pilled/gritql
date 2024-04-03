@@ -1,5 +1,5 @@
 use marzano_util::position::Range;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use super::{
     auto_wrap::wrap_pattern_in_before_and_after_each_file,
@@ -8,15 +8,15 @@ use super::{
     resolved_pattern::{File, ResolvedPattern},
     state::{FilePtr, State},
     variable::{VariableSourceLocations, GLOBAL_VARS_SCOPE_INDEX},
-    Context, FileOwner,
+    FileOwner,
 };
 use crate::{
-    binding::Constant,
+    context::Context,
     orphan::{get_orphaned_ranges, remove_orphaned_ranges},
     pattern::{InputRanges, MatchRanges},
     text_unparser::apply_effects,
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use im::vector;
 use marzano_language::language::Language;
 use marzano_util::analysis_logs::{AnalysisLogBuilder, AnalysisLogs};
@@ -189,11 +189,11 @@ impl Matcher for Step {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         let mut parser = Parser::new()?;
-        parser.set_language(context.language.get_ts_language())?;
+        parser.set_language(context.language().get_ts_language())?;
 
         let files = if let Some(files) = extract_file_pointers(binding) {
             files
@@ -220,7 +220,7 @@ impl Matcher for Step {
 
         // todo, for multifile we need to split up the matches by file.
         let (variables, ranges, suppressed) =
-            state.bindings_history_to_ranges(context.language, &context.name);
+            state.bindings_history_to_ranges(context.language(), context.name());
 
         let input_ranges = InputRanges {
             ranges,
@@ -231,10 +231,9 @@ impl Matcher for Step {
             let file = state.files.get_file(file_ptr);
             let mut match_log = file.matches.borrow_mut();
 
-            let filename_string = &file.name;
+            let filename_path = &file.name;
 
-            // todo shouldn't have to wrap new_filename in const
-            let mut new_filename: Constant = Constant::String(filename_string.to_owned());
+            let mut new_filename = filename_path.clone();
 
             let src = &file.source;
 
@@ -246,7 +245,8 @@ impl Matcher for Step {
                 .effects
                 .iter()
                 .find(|e| {
-                    e.binding.source() == Some(src) || e.binding.source() == Some(filename_string)
+                    e.binding.source() == Some(src)
+                        || e.binding.as_filename() == Some(filename_path)
                 })
                 .cloned()
                 .is_some()
@@ -257,13 +257,13 @@ impl Matcher for Step {
                     &state.files,
                     &file.name,
                     &mut new_filename,
-                    context.language,
-                    &context.name,
+                    context.language(),
+                    context.name(),
                     logs,
                 )?;
                 if let Some(new_ranges) = new_ranges {
                     let tree = parser.parse(new_src.as_bytes(), None).unwrap().unwrap();
-                    let orphans = get_orphaned_ranges(&tree, &new_src, context.language);
+                    let orphans = get_orphaned_ranges(&tree, &new_src, context.language());
                     let (_cleaned_tree, cleaned_src) =
                         remove_orphaned_ranges(&mut parser, orphans, &new_src)?;
                     let new_src = if let Some(src) = cleaned_src {
@@ -275,17 +275,23 @@ impl Matcher for Step {
                     let ranges =
                         MatchRanges::new(new_ranges.into_iter().map(|r| r.into()).collect());
                     let owned_file = FileOwner::new(
-                        new_filename.to_string(),
+                        new_filename.clone(),
                         new_src,
                         Some(ranges),
                         true,
-                        context.language,
+                        context.language(),
                         logs,
-                    )?;
-                    context.files.push(owned_file);
+                    )?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "failed to construct new file for file {}",
+                            new_filename.to_string_lossy()
+                        )
+                    })?;
+                    context.files().push(owned_file);
                     state
                         .files
-                        .push_revision(&file_ptr, context.files.last().unwrap())
+                        .push_revision(&file_ptr, context.files().last().unwrap())
                 }
             };
         }
@@ -295,12 +301,23 @@ impl Matcher for Step {
         {
             for f in new_files_vector {
                 if let ResolvedPattern::File(file) = f {
-                    let name = file.name(&state.files).text(&state.files).unwrap().into();
+                    let name: PathBuf = file
+                        .name(&state.files)
+                        .text(&state.files)
+                        .unwrap()
+                        .as_ref()
+                        .into();
                     let body = file.body(&state.files).text(&state.files).unwrap().into();
                     let owned_file =
-                        FileOwner::new(name, body, None, true, context.language, logs)?;
-                    context.files.push(owned_file);
-                    let _ = state.files.push_new_file(context.files.last().unwrap());
+                        FileOwner::new(name.clone(), body, None, true, context.language(), logs)?
+                            .ok_or_else(|| {
+                            anyhow!(
+                                "failed to construct new file for file {}",
+                                name.to_string_lossy()
+                            )
+                        })?;
+                    context.files().push(owned_file);
+                    let _ = state.files.push_new_file(context.files().last().unwrap());
                 } else {
                     bail!("Expected a list of files")
                 }

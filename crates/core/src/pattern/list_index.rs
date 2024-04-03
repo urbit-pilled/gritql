@@ -1,10 +1,3 @@
-use std::collections::BTreeMap;
-
-use crate::{
-    binding::{Binding, Constant},
-    resolve_opt,
-};
-
 use super::{
     accessor::execute_resolved_with_binding,
     compiler::CompilationContext,
@@ -14,11 +7,13 @@ use super::{
     resolved_pattern::ResolvedPattern,
     state::State,
     variable::VariableSourceLocations,
-    Context,
 };
+use crate::binding::{Binding, Constant};
+use crate::context::Context;
+use crate::resolve_opt;
 use anyhow::{anyhow, bail, Result};
-use im::vector;
-use marzano_util::{analysis_logs::AnalysisLogs, tree_sitter_util::named_children_by_field_id};
+use marzano_util::analysis_logs::AnalysisLogs;
+use std::collections::BTreeMap;
 use tree_sitter::Node;
 
 #[derive(Debug, Clone)]
@@ -133,21 +128,16 @@ impl ListIndex {
                     Ok(l.get(index).map(PatternOrResolved::Pattern))
                 }
                 Some(PatternOrResolved::Resolved(ResolvedPattern::Binding(b))) => {
-                    let binding = b
+                    let mut list_items = b
                         .last()
+                        .and_then(Binding::list_items)
                         .ok_or_else(|| anyhow!("left side of a listIndex must be a list"))?;
-                    if let Binding::List(src, node, field) = binding {
-                        let mut cursor = node.walk();
-                        let len = named_children_by_field_id(node, &mut cursor, *field).count();
-                        let mut list = named_children_by_field_id(node, &mut cursor, *field);
-                        let index = resolve_opt!(to_unsigned(index, len));
-                        return Ok(list.nth(index).map(|n| {
-                            PatternOrResolved::ResolvedBinding(ResolvedPattern::Binding(vector![
-                                Binding::Node(src, n)
-                            ]))
-                        }));
-                    }
-                    bail!("left side of a listIndex must be a list")
+
+                    let len = list_items.clone().count();
+                    let index = resolve_opt!(to_unsigned(index, len));
+                    return Ok(list_items.nth(index).map(|n| {
+                        PatternOrResolved::ResolvedBinding(ResolvedPattern::from_node(n))
+                    }));
                 }
                 Some(PatternOrResolved::Resolved(ResolvedPattern::List(l))) => {
                     let index = resolve_opt!(to_unsigned(index, l.len()));
@@ -171,21 +161,16 @@ impl ListIndex {
                     Ok(l.get(index).map(PatternOrResolvedMut::Pattern))
                 }
                 Some(PatternOrResolvedMut::Resolved(ResolvedPattern::Binding(b))) => {
-                    let binding = b
+                    let mut list_items = b
                         .last()
+                        .and_then(Binding::list_items)
                         .ok_or_else(|| anyhow!("left side of a listIndex must be a list"))?;
-                    if let Binding::List(src, node, field) = binding {
-                        let mut cursor = node.walk();
-                        let len = named_children_by_field_id(node, &mut cursor, *field).count();
-                        let mut list = named_children_by_field_id(node, &mut cursor, *field);
-                        let index = resolve_opt!(to_unsigned(index, len));
-                        return Ok(list.nth(index).map(|n| {
-                            PatternOrResolvedMut::_ResolvedBinding(ResolvedPattern::Binding(
-                                vector![Binding::Node(src, n)],
-                            ))
-                        }));
-                    }
-                    bail!("left side of a listIndex must be a list")
+
+                    let len = list_items.clone().count();
+                    let index = resolve_opt!(to_unsigned(index, len));
+                    Ok(list_items
+                        .nth(index)
+                        .map(|_| PatternOrResolvedMut::_ResolvedBinding))
                 }
                 Some(PatternOrResolvedMut::Resolved(ResolvedPattern::List(l))) => {
                     let index = resolve_opt!(to_unsigned(index, l.len()));
@@ -238,7 +223,7 @@ impl Matcher for ListIndex {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        context: &Context<'a>,
+        context: &'a impl Context,
         logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         match self.get(state)? {

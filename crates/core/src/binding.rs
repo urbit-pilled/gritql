@@ -1,16 +1,20 @@
 use crate::inline_snippets::inline_sorted_snippets_with_offset;
+use crate::pattern::resolved_pattern::CodeRange;
 use crate::pattern::state::{get_top_level_effects, FileRegistry};
 use crate::pattern::{Effect, EffectKind};
 use anyhow::{anyhow, Result};
+use grit_util::AstNode;
 use marzano_language::language::{FieldId, Language};
 use marzano_language::target_language::TargetLanguage;
 use marzano_util::analysis_logs::{AnalysisLogBuilder, AnalysisLogs};
+use marzano_util::node_with_source::NodeWithSource;
 use marzano_util::position::{Position, Range};
+use marzano_util::tree_sitter_util::children_by_field_id_count;
+use std::iter;
 use std::ops::Range as StdRange;
+use std::path::Path;
 use std::{borrow::Cow, collections::HashMap, fmt::Display};
 use tree_sitter::Node;
-
-use crate::pattern::resolved_pattern::CodeRange;
 
 // the inner references hold the mutable state
 #[derive(Debug, Clone)]
@@ -20,6 +24,22 @@ pub enum Constant {
     Integer(i64),
     Float(f64),
     Undefined,
+}
+
+impl Constant {
+    pub(crate) fn is_truthy(&self) -> bool {
+        match self {
+            Constant::Integer(i) => *i != 0,
+            Constant::Float(d) => *d != 0.0,
+            Constant::Boolean(b) => *b,
+            Constant::String(s) => !s.is_empty(),
+            Constant::Undefined => false,
+        }
+    }
+
+    pub(crate) fn is_undefined(&self) -> bool {
+        matches!(self, Self::Undefined)
+    }
 }
 
 impl Display for Constant {
@@ -52,7 +72,7 @@ pub enum Binding<'a> {
     // used by slices that don't correspond to a node
     // currently only comment content.
     String(&'a str, Range),
-    FileName(&'a str),
+    FileName(&'a Path),
     Node(&'a str, Node<'a>),
     // tree-sitter lists ("multiple" fields of nodes) do not have a unique identity
     // so we represent them by the parent node and a field id
@@ -64,16 +84,16 @@ pub enum Binding<'a> {
 impl PartialEq for Binding<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Binding::Empty(_, _, _), Binding::Empty(_, _, _)) => true,
-            (Binding::Node(src1, n1), Binding::Node(src2, n2)) => {
+            (Self::Empty(_, _, _), Self::Empty(_, _, _)) => true,
+            (Self::Node(src1, n1), Self::Node(src2, n2)) => {
                 n1.utf8_text(src1.as_bytes()) == n2.utf8_text(src2.as_bytes())
             }
-            (Binding::String(src1, r1), Binding::String(src2, r2)) => {
+            (Self::String(src1, r1), Self::String(src2, r2)) => {
                 src1[r1.start_byte as usize..r1.end_byte as usize]
                     == src2[r2.start_byte as usize..r2.end_byte as usize]
             }
-            (Binding::List(_, n1, f1), Binding::List(_, n2, f2)) => n1 == n2 && f1 == f2,
-            (Binding::ConstantRef(c1), Binding::ConstantRef(c2)) => c1 == c2,
+            (Self::List(_, n1, f1), Self::List(_, n2, f2)) => n1 == n2 && f1 == f2,
+            (Self::ConstantRef(c1), Self::ConstantRef(c2)) => c1 == c2,
             _ => false,
         }
     }
@@ -87,6 +107,17 @@ fn pad_snippet(padding: &str, snippet: &str) -> String {
     // Add the rest of lines in the snippet with padding
     lines.for_each(|line| result.push_str(&format!("\n{}{}", &padding, line)));
     result
+}
+
+fn adjust_ranges(substitutions: &mut [(EffectRange, String)], index: usize, delta: isize) {
+    for (EffectRange { range, .. }, _) in substitutions.iter_mut() {
+        if range.start >= index {
+            range.start = (range.start as isize + delta) as usize;
+        }
+        if range.end >= index {
+            range.end = (range.end as isize + delta) as usize;
+        }
+    }
 }
 
 // in multiline snippets, remove padding from every line equal to the padding of the first line,
@@ -122,14 +153,11 @@ pub(crate) fn adjust_padding<'a>(
         for line in lines {
             result.push('\n');
             index += 1;
-            for (EffectRange { range, .. }, _) in substitutions.iter_mut() {
-                if range.start >= index {
-                    range.start = (range.start as isize + delta) as usize;
-                }
-                if range.end >= index {
-                    range.end = (range.end as isize + delta) as usize;
-                }
+            if line.trim().is_empty() {
+                adjust_ranges(substitutions, index, -(line.len() as isize));
+                continue;
             }
+            adjust_ranges(substitutions, index, delta);
             let line = line.strip_prefix(&padding).ok_or_else(|| {
                 anyhow!(
                     "expected line \n{}\n to start with {} spaces, code is either not indented with spaces, or does not consistently indent code blocks",
@@ -175,49 +203,6 @@ impl EffectRange {
     }
 }
 
-pub(crate) fn log_empty_field_rewrite_error<T>(
-    range: &Option<T>,
-    binding: &Binding,
-    language: &TargetLanguage,
-    logs: &mut AnalysisLogs,
-) -> Result<()> {
-    if range.is_none() {
-        match binding {
-            Binding::Empty(src, node, field) => {
-                let range: Range = node.range().into();
-                let log = AnalysisLogBuilder::default()
-                    .level(441_u16)
-                    .source(*src)
-                    .position(range.start)
-                    .range(range)
-                    .message(format!(
-            "Error: failed to rewrite binding, cannot derive range of empty field {} of node {}", language.get_ts_language().field_name_for_id(*field).unwrap(), node.kind()
-        ))
-                    .build()?;
-                logs.push(log);
-            }
-            Binding::List(src, node, field) => {
-                let range: Range = node.range().into();
-                let log = AnalysisLogBuilder::default()
-                    .level(441_u16)
-                    .source(*src)
-                    .position(range.start)
-                    .range(range)
-                    .message(format!(
-            "Error: failed to rewrite binding, cannot derive range of empty field {} of node {}", language.get_ts_language().field_name_for_id(*field).unwrap(), node.kind()
-        ))
-                    .build()?;
-                logs.push(log);
-            }
-            Binding::String(_, _)
-            | Binding::FileName(_)
-            | Binding::Node(_, _)
-            | Binding::ConstantRef(_) => {}
-        }
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn linearize_binding<'a>(
     language: &TargetLanguage,
@@ -239,9 +224,11 @@ pub(crate) fn linearize_binding<'a>(
                 (Some(src), Some(orig_range)) => {
                     (Some(src), Some(CodeRange::from_range(src, orig_range)))
                 }
-                _ => (None, None),
+                _ => {
+                    b.log_empty_field_rewrite_error(language, logs)?;
+                    (None, None)
+                }
             };
-            log_empty_field_rewrite_error(&range, &b, language, logs)?;
             if let (Some(src), Some(range)) = (src, &range) {
                 match effect.kind {
                     EffectKind::Rewrite => {
@@ -324,15 +311,37 @@ pub(crate) fn linearize_binding<'a>(
 }
 
 impl<'a> Binding<'a> {
-    pub fn singleton(&self) -> Option<(&str, Node)> {
+    pub(crate) fn from_constant(constant: &'a Constant) -> Self {
+        Self::ConstantRef(constant)
+    }
+
+    pub(crate) fn from_node(node: NodeWithSource<'a>) -> Self {
+        Self::Node(node.source, node.node)
+    }
+
+    pub(crate) fn from_path(path: &'a Path) -> Self {
+        Self::FileName(path)
+    }
+
+    pub(crate) fn from_range(range: Range, source: &'a str) -> Self {
+        Self::String(source, range)
+    }
+
+    /// Returns the only node bound by this binding.
+    ///
+    /// This includes list bindings that only match a single child.
+    ///
+    /// Returns `None` if the binding has no associated node, or if there is
+    /// more than one associated node.
+    pub(crate) fn singleton(&self) -> Option<NodeWithSource<'a>> {
         match self {
-            Binding::Node(src, node) => Some((src, node.to_owned())),
-            Binding::List(src, parent_node, field_id) => {
+            Self::Node(src, node) => Some(NodeWithSource::new(node.clone(), src)),
+            Self::List(src, parent_node, field_id) => {
                 let mut cursor = parent_node.walk();
                 let mut children = parent_node.children_by_field_id(*field_id, &mut cursor);
                 if let Some(node) = children.next() {
                     if children.next().is_none() {
-                        Some((src, node.to_owned()))
+                        Some(NodeWithSource::new(node.clone(), src))
                     } else {
                         None
                     }
@@ -340,17 +349,14 @@ impl<'a> Binding<'a> {
                     None
                 }
             }
-            Binding::String(..)
-            | Binding::FileName(_)
-            | Binding::Empty(..)
-            | Binding::ConstantRef(_) => None,
+            Self::String(..) | Self::FileName(..) | Self::Empty(..) | Self::ConstantRef(..) => None,
         }
     }
 
     pub fn get_sexp(&self) -> Option<String> {
         match self {
-            Binding::Node(_, node) => Some(node.to_sexp().to_string()),
-            Binding::List(_, parent_node, field_id) => {
+            Self::Node(_, node) => Some(node.to_sexp().to_string()),
+            Self::List(_, parent_node, field_id) => {
                 let mut cursor = parent_node.walk();
                 let mut children = parent_node.children_by_field_id(*field_id, &mut cursor);
                 let mut result = String::new();
@@ -363,20 +369,17 @@ impl<'a> Binding<'a> {
                 }
                 Some(result)
             }
-            Binding::String(..)
-            | Binding::FileName(_)
-            | Binding::Empty(..)
-            | Binding::ConstantRef(_) => None,
+            Self::String(..) | Self::FileName(_) | Self::Empty(..) | Self::ConstantRef(_) => None,
         }
     }
 
     // todo implement for empty and empty list
     pub fn position(&self) -> Option<Range> {
         match self {
-            Binding::Empty(_, _, _) => None,
-            Binding::Node(_, node) => Some(Range::from(node.range())),
-            Binding::String(_, range) => Some(range.to_owned()),
-            Binding::List(_, parent_node, field_id) => {
+            Self::Empty(_, _, _) => None,
+            Self::Node(_, node) => Some(Range::from(node.range())),
+            Self::String(_, range) => Some(range.to_owned()),
+            Self::List(_, parent_node, field_id) => {
                 let mut cursor = parent_node.walk();
                 let mut children = parent_node.children_by_field_id(*field_id, &mut cursor);
 
@@ -418,8 +421,8 @@ impl<'a> Binding<'a> {
                     }
                 }
             }
-            Binding::FileName(_) => None,
-            Binding::ConstantRef(_) => None,
+            Self::FileName(_) => None,
+            Self::ConstantRef(_) => None,
         }
     }
 
@@ -433,8 +436,8 @@ impl<'a> Binding<'a> {
         logs: &mut AnalysisLogs,
     ) -> Result<Cow<'a, str>> {
         let res: Result<Cow<'a, str>> = match self {
-            Binding::Empty(_, _, _) => Ok(Cow::Borrowed("")),
-            Binding::Node(source, node) => {
+            Self::Empty(_, _, _) => Ok(Cow::Borrowed("")),
+            Self::Node(source, node) => {
                 let range = CodeRange::from_node(source, node);
                 linearize_binding(
                     language,
@@ -450,11 +453,11 @@ impl<'a> Binding<'a> {
             }
             // can't linearize until we update source to point to the entire file
             // otherwise file file pointers won't match
-            Binding::String(s, r) => Ok(Cow::Owned(
+            Self::String(s, r) => Ok(Cow::Owned(
                 s[r.start_byte as usize..r.end_byte as usize].into(),
             )),
-            Binding::FileName(s) => Ok(Cow::Owned(s.to_string())),
-            Binding::List(source, _parent_node, _field_id) => {
+            Self::FileName(s) => Ok(Cow::Owned(s.to_string_lossy().into())),
+            Self::List(source, _parent_node, _field_id) => {
                 if let Some(pos) = self.position() {
                     let range = CodeRange::new(pos.start_byte, pos.end_byte, source);
                     linearize_binding(
@@ -472,48 +475,164 @@ impl<'a> Binding<'a> {
                     Ok("".into())
                 }
             }
-            Binding::ConstantRef(c) => Ok(Cow::Owned(c.to_string())),
+            Self::ConstantRef(c) => Ok(Cow::Owned(c.to_string())),
         };
         res
     }
 
     pub fn text(&self) -> String {
         match self {
-            Binding::Empty(_, _, _) => "".to_string(),
-            Binding::Node(source, node) => node_text(source, node).to_string(),
-            Binding::String(s, r) => s[r.start_byte as usize..r.end_byte as usize].into(),
-            Binding::FileName(s) => s.to_string(),
-            Binding::List(source, _, _) => {
+            Self::Empty(_, _, _) => "".to_string(),
+            Self::Node(source, node) => {
+                NodeWithSource::new(node.clone(), source).text().to_string()
+            }
+            Self::String(s, r) => s[r.start_byte as usize..r.end_byte as usize].into(),
+            Self::FileName(s) => s.to_string_lossy().into(),
+            Self::List(source, _, _) => {
                 if let Some(pos) = self.position() {
                     source[pos.start_byte as usize..pos.end_byte as usize].to_string()
                 } else {
                     "".to_string()
                 }
             }
-            Binding::ConstantRef(c) => match c {
-                Constant::Boolean(b) => b.to_string(),
-                Constant::String(s) => s.to_string(),
-                Constant::Integer(i) => i.to_string(),
-                Constant::Float(d) => d.to_string(),
-                Constant::Undefined => String::new(),
-            },
+            Self::ConstantRef(c) => c.to_string(),
         }
     }
 
     pub fn source(&self) -> Option<&'a str> {
         match self {
-            Binding::Empty(source, _, _) => Some(source),
-            Binding::Node(source, _) => Some(source),
-            Binding::String(source, _) => Some(source),
-            Binding::List(source, _, _) => Some(source),
-            // maybe should be none?
-            Binding::FileName(source) => Some(source),
-            Binding::ConstantRef(_) => None,
+            Self::Empty(source, _, _) => Some(source),
+            Self::Node(source, _) => Some(source),
+            Self::String(source, _) => Some(source),
+            Self::List(source, _, _) => Some(source),
+            Self::FileName(..) | Self::ConstantRef(..) => None,
         }
     }
-}
 
-pub(crate) fn node_text<'a>(source: &'a str, node: &Node) -> &'a str {
-    let range = Range::from(node.range());
-    &source[range.start_byte as usize..range.end_byte as usize]
+    /// Returns the constant this binding binds to, if and only if it is a constant binding.
+    pub fn as_constant(&self) -> Option<&Constant> {
+        if let Self::ConstantRef(constant) = self {
+            Some(constant)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the path of this binding, if and only if it is a filename binding.
+    pub fn as_filename(&self) -> Option<&Path> {
+        if let Self::FileName(path) = self {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the node of this binding, if and only if it is a node binding.
+    pub(crate) fn as_node(&self) -> Option<NodeWithSource<'a>> {
+        if let Self::Node(source, node) = self {
+            Some(NodeWithSource::new(node.clone(), source))
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if and only if this binding is bound to a list.
+    pub(crate) fn is_list(&self) -> bool {
+        matches!(self, Self::List(..))
+    }
+
+    /// Returns an iterator over the items in a list.
+    ///
+    /// Returns `None` if the binding is not bound to a list.
+    pub(crate) fn list_items(&self) -> Option<impl Iterator<Item = NodeWithSource<'a>> + Clone> {
+        match self {
+            Self::List(src, node, field_id) => {
+                let field_id = *field_id;
+                let mut cursor = node.walk();
+                cursor.goto_first_child();
+                let mut done = false;
+                Some(
+                    iter::from_fn(move || {
+                        // seems to me that the external loop is unnecessary, but was
+                        // getting an infinite loop without it.
+                        #[allow(clippy::never_loop)]
+                        while !done {
+                            while cursor.field_id() != Some(field_id) {
+                                if !cursor.goto_next_sibling() {
+                                    return None;
+                                }
+                            }
+                            let result = cursor.node();
+                            if !cursor.goto_next_sibling() {
+                                done = true;
+                            }
+                            return Some(result);
+                        }
+                        None
+                    })
+                    .filter(|child| child.is_named())
+                    .map(|named_child| NodeWithSource::new(named_child, src)),
+                )
+            }
+            Self::Empty(..)
+            | Self::Node(..)
+            | Self::String(..)
+            | Self::ConstantRef(..)
+            | Self::FileName(..) => None,
+        }
+    }
+
+    /// Returns the parent node of this binding.
+    ///
+    /// Returns `None` if the binding has no relation to a node.
+    pub(crate) fn parent_node(&self) -> Option<NodeWithSource<'a>> {
+        match self {
+            Self::Node(src, node) => node.parent().map(|parent| NodeWithSource::new(parent, src)),
+            Self::List(src, node, _) => Some(NodeWithSource::new(node.clone(), src)),
+            Self::Empty(src, node, _) => Some(NodeWithSource::new(node.clone(), src)),
+            Self::String(..) | Self::FileName(..) | Self::ConstantRef(..) => None,
+        }
+    }
+
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Self::Empty(..) => false,
+            Self::List(_, node, field_id) => {
+                let child_count = children_by_field_id_count(node, *field_id);
+                child_count > 0
+            }
+            Self::Node(..) => true,
+            // This refers to a slice of the source code, not a Grit string literal, so it is truthy
+            Self::String(..) => true,
+            Self::FileName(_) => true,
+            Self::ConstantRef(c) => c.is_truthy(),
+        }
+    }
+
+    pub(crate) fn log_empty_field_rewrite_error(
+        &self,
+        language: &TargetLanguage,
+        logs: &mut AnalysisLogs,
+    ) -> Result<()> {
+        match self {
+            Self::Empty(src, node, field) | Self::List(src, node, field) => {
+                let range: Range = node.range().into();
+                let log = AnalysisLogBuilder::default()
+                        .level(441_u16)
+                        .source(*src)
+                        .position(range.start)
+                        .range(range)
+                        .message(format!(
+                            "Error: failed to rewrite binding, cannot derive range of empty field {} of node {}",
+                            language.get_ts_language().field_name_for_id(*field).unwrap(),
+                            node.kind()
+                        ))
+                        .build()?;
+                logs.push(log);
+            }
+            Self::String(_, _) | Self::FileName(_) | Self::Node(_, _) | Self::ConstantRef(_) => {}
+        }
+
+        Ok(())
+    }
 }

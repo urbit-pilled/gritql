@@ -1,14 +1,14 @@
 use super::{
     patterns::{Matcher, Name},
     resolved_pattern::ResolvedPattern,
-    Context, State,
+    State,
 };
-use crate::binding::{node_text, Binding};
+use crate::{binding::Binding, context::Context};
 use anyhow::{anyhow, Result};
 use core::fmt::Debug;
+use grit_util::AstNode;
 use marzano_language::language::{Language, LeafEquivalenceClass, SortId};
 use marzano_util::analysis_logs::AnalysisLogs;
-use marzano_util::tree_sitter_util::named_children_by_field_id;
 
 #[derive(Debug, Clone)]
 pub struct StringConstant {
@@ -42,7 +42,7 @@ impl Matcher for StringConstant {
         &'a self,
         binding: &ResolvedPattern<'a>,
         state: &mut State<'a>,
-        _context: &Context<'a>,
+        _context: &'a impl Context,
         _logs: &mut AnalysisLogs,
     ) -> Result<bool> {
         let text = binding.text(&state.files)?;
@@ -86,40 +86,21 @@ impl Matcher for AstLeafNode {
         &'a self,
         binding: &ResolvedPattern<'a>,
         _state: &mut State<'a>,
-        _context: &Context<'a>,
+        _context: &'a impl Context,
         _logs: &mut AnalysisLogs,
     ) -> Result<bool> {
-        if let ResolvedPattern::Binding(b) = binding {
-            let (src, n) = match b.last() {
-                Some(Binding::Node(src, n)) => (src, n.to_owned()),
-                Some(Binding::List(src, n, f)) => {
-                    let mut w = n.walk();
-                    let mut l = named_children_by_field_id(n, &mut w, *f);
-                    if let (Some(n), None) = (l.next(), l.next()) {
-                        (src, n)
-                    } else {
-                        return Ok(false);
-                    }
-                }
-                Some(Binding::ConstantRef(..))
-                | Some(Binding::Empty(..))
-                | Some(Binding::FileName(..))
-                | Some(Binding::String(..))
-                | None => return Ok(false),
-            };
-            if let Some(e) = &self.equivalence_class {
-                let text = node_text(src, &n);
-                return Ok(e.are_equivalent(n.kind_id(), text.trim()));
-            } else if self.sort != n.kind_id() {
-                return Ok(false);
-            }
-            let text = node_text(src, &n);
-            if text.trim() == self.text {
-                return Ok(true);
-            } else {
-                return Ok(false);
-            }
+        let ResolvedPattern::Binding(b) = binding else {
+            return Ok(false);
+        };
+        let Some(node) = b.last().and_then(Binding::singleton) else {
+            return Ok(false);
+        };
+        if let Some(e) = &self.equivalence_class {
+            Ok(e.are_equivalent(node.node.kind_id(), node.text().trim()))
+        } else if self.sort != node.node.kind_id() {
+            Ok(false)
+        } else {
+            Ok(node.text().trim() == self.text)
         }
-        Ok(false)
     }
 }
