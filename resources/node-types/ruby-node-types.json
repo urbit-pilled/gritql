@@ -2096,6 +2096,16 @@
     "type": "element_reference",
     "named": true,
     "fields": {
+      "expression": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      },
       "object": {
         "multiple": false,
         "required": true,
