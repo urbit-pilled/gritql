@@ -2349,6 +2349,7 @@ dependencies = [
  "tree-sitter-java",
  "tree-sitter-javascript",
  "tree-sitter-json",
+ "tree-sitter-kotlin",
  "tree-sitter-md",
  "tree-sitter-php",
  "tree-sitter-python",
@@ -4402,6 +4403,14 @@ dependencies = [
 [[package]]
 name = "tree-sitter-json"
 version = "0.20.2"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-kotlin"
+version = "0.3.9"
 dependencies = [
  "cc",
  "tree-sitter",
