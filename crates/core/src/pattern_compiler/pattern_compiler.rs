@@ -74,9 +74,18 @@ impl PatternCompiler {
         context: &mut dyn SnippetCompilationContext,
         is_rhs: bool,
     ) -> Result<Pattern<MarzanoQueryContext>> {
+        println!("\n=== Starting from_snippet_node ===");
+        println!("Node kind: {}", node.node.kind());
+        println!("Node text: {}", node.text()?);
+        println!("Context range: {:?}", context_range);
+        println!("Is RHS: {}", is_rhs);
+
         let snippet_start = node.node.start_byte() as usize;
         let ranges = metavariable_ranges(&node, context.get_lang());
+        println!("Found metavariable ranges: {:?}", ranges);
+
         let range_map = metavariable_range_mapping(ranges, snippet_start);
+        println!("Range mapping: {:?}", range_map);
 
         fn node_to_astnode(
             node: NodeWithSource,
@@ -85,34 +94,50 @@ impl PatternCompiler {
             context: &mut dyn SnippetCompilationContext,
             is_rhs: bool,
         ) -> Result<Pattern<MarzanoQueryContext>> {
+            println!("\n-> Processing node: {}", node.node.kind());
+            println!("   Text: {}", node.text()?);
+
             let sort = node.node.kind_id();
-            // probably safe to assume node is named, but just in case
-            // maybe doesn't even matter, but is what I expect,
-            // make this ann assertion?
+            println!("   Sort ID: {} Value: {}", sort, node.node.kind());
+
+            // Check for metavariables
             let metavariable =
                 metavariable_descendent(&node, context_range, range_map, context, is_rhs)?;
+            println!("   Metavariable check result: {:?}", metavariable.is_some());
             if let Some(metavariable) = metavariable {
+                println!("   -> Returning metavariable pattern");
                 return Ok(metavariable);
             }
+
             let language = *context.get_lang();
             let node_types = language.node_types();
 
+            // Handle leaf nodes
             if node_types[sort as usize].is_empty() {
+                println!("   Processing leaf node");
                 let content = node.text()?;
                 if (node.node.named_child_count() == 0)
                     && language.replaced_metavariable_regex().is_match(&content)
                 {
+                    println!("   -> Checking for implicit metavariable regex");
                     let regex =
                         implicit_metavariable_regex(&node, context_range, range_map, context)?;
                     if let Some(regex) = regex {
+                        println!("   -> Returning regex pattern");
                         return Ok(Pattern::Regex(Box::new(regex)));
                     }
                 }
+                println!("   -> Returning leaf node pattern");
                 return Ok(Pattern::AstLeafNode(AstLeafNode::new(
                     sort, &content, &language,
                 )?));
             }
+
+            // Handle non-leaf nodes
+            println!("   Processing non-leaf node with fields");
             let fields: &Vec<Field> = &node_types[sort as usize];
+            println!("   Number of fields: {}", fields.len());
+
             let args = fields
                 .iter()
                 .filter(|field| {
@@ -120,20 +145,29 @@ impl PatternCompiler {
                         .node
                         .child_by_field_id(field.id())
                         .map(|n| NodeWithSource::new(n, node.source));
-                    // Then check if it's an empty, optional field
+
                     if language.is_disregarded_snippet_field(sort, field.id(), &child_with_source) {
+                        println!("   Skipping disregarded field: {}", field.id());
                         return false;
                     }
-                    // Otherwise compile it
                     true
                 })
                 .map(|field| {
+                    println!(
+                        "   Processing field ID: {} Name: {}",
+                        field.id(),
+                        field.name()
+                    );
                     let field_id = field.id();
                     let mut nodes_list = node
                         .named_children_by_field_id(field_id)
                         .map(|n| node_to_astnode(n, context_range, range_map, context, is_rhs))
                         .collect::<Result<Vec<Pattern<MarzanoQueryContext>>>>()?;
+
+                    println!("   Field nodes count: {}", nodes_list.len());
+
                     if !field.multiple() {
+                        println!("   -> Single field pattern");
                         return Ok((
                             field_id,
                             false,
@@ -146,14 +180,18 @@ impl PatternCompiler {
                                 ))),
                         ));
                     }
+
                     if nodes_list.len() == 1
                         && matches!(
                             nodes_list.first(),
                             Some(Pattern::Variable(_)) | Some(Pattern::Underscore)
                         )
                     {
+                        println!("   -> Single variable/underscore list pattern");
                         return Ok((field_id, true, nodes_list.pop().unwrap()));
                     }
+
+                    println!("   -> Multiple field list pattern");
                     Ok((
                         field_id,
                         true,
@@ -161,9 +199,15 @@ impl PatternCompiler {
                     ))
                 })
                 .collect::<Result<Vec<(u16, bool, Pattern<MarzanoQueryContext>)>>>()?;
+
+            println!("   -> Returning AST node pattern with {} args", args.len());
             Ok(Pattern::AstNode(Box::new(ASTNode { sort, args })))
         }
-        node_to_astnode(node, context_range, &range_map, context, is_rhs)
+
+        let result = node_to_astnode(node, context_range, &range_map, context, is_rhs);
+        println!("\n=== Completed from_snippet_node ===");
+        println!("Result: {:?}\n", result.is_ok());
+        result
     }
 }
 

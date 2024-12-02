@@ -294,6 +294,8 @@ impl Parser for MarzanoParser {
     }
 }
 
+use tree_sitter::Node;
+
 #[enum_dispatch]
 pub trait MarzanoLanguage<'a>: Language<Node<'a> = NodeWithSource<'a>> + NodeTypes {
     /// tree sitter language to parse the source
@@ -304,15 +306,79 @@ pub trait MarzanoLanguage<'a>: Language<Node<'a> = NodeWithSource<'a>> + NodeTyp
     }
 
     fn parse_snippet_contexts(&self, source: &str) -> Vec<SnippetTree<Tree>> {
+        println!("\n=== Starting parse_snippet_contexts ===");
+        println!("Original source: {}", source);
+
+        // First substitute $ with µ in metavariables
         let source = self.substitute_metavariable_prefix(source);
-        self.snippet_context_strings()
+        println!("After metavariable substitution: {}", source);
+
+        // Get all available context pairs
+        let contexts = self.snippet_context_strings();
+        println!("\nAvailable contexts ({} total):", contexts.len());
+        for (i, (prefix, suffix)) in contexts.iter().enumerate() {
+            println!("  {}. prefix='{}', suffix='{}'", i + 1, prefix, suffix);
+        }
+
+        let results: Vec<SnippetTree<Tree>> = self
+            .snippet_context_strings()
             .iter()
-            .map(|(pre, post)| self.get_parser().parse_snippet(pre, &source, post))
+            .enumerate()
+            .map(|(i, (pre, post))| {
+                println!("\nTrying context {}", i + 1);
+                println!("Wrapping snippet with: prefix='{}', suffix='{}'", pre, post);
+
+                let result = self.get_parser().parse_snippet(pre, &source, post);
+                let root_node = &result.tree.root_node();
+
+                println!("Parse result:");
+                println!("  Start byte: {}", result.snippet_start);
+                println!("  End byte: {}", result.snippet_end);
+                println!("  Tree: {:#?}", root_node.node.to_sexp());
+                self.print_tree(root_node, 0);
+                println!("  Has error: {}", root_node.node.has_error());
+                println!("  Is error: {}", root_node.node.is_error());
+                println!("  Is missing: {}", root_node.node.is_missing());
+                println!("  Root kind: {}", root_node.node.kind());
+
+                result
+            })
             .filter(|result| {
                 let root_node = &result.tree.root_node().node;
-                !(root_node.has_error() || root_node.is_error() || root_node.is_missing())
+                let is_valid =
+                    !(root_node.has_error() || root_node.is_error() || root_node.is_missing());
+
+                if is_valid {
+                    println!("  -> Valid parse, keeping this result");
+                } else {
+                    println!("  -> Invalid parse, filtering out this result");
+                }
+
+                is_valid
             })
-            .collect()
+            .collect();
+
+        println!("\nFinal Results:");
+        println!("Successfully parsed in {} contexts", results.len());
+        for (i, result) in results.iter().enumerate() {
+            println!(
+                "  {}. Root kind: {}",
+                i + 1,
+                result.tree.root_node().node.kind()
+            );
+        }
+        println!("=== Completed parse_snippet_contexts ===\n");
+
+        results
+    }
+
+    fn print_tree(&self, node: &NodeWithSource, depth: usize) {
+        let indent = "  ".repeat(depth);
+        println!("{}{:?}", indent, node.node.kind(),);
+
+        for child in node.children() {
+            self.print_tree(&child, depth + 1);
+        }
     }
 
     fn align_padding<'b>(
@@ -562,62 +628,136 @@ pub fn nodes_from_indices(indices: &[SnippetTree<Tree>]) -> Vec<NodeWithSource> 
 }
 
 fn snippet_nodes_from_index(snippet: &SnippetTree<Tree>) -> Option<NodeWithSource> {
+    println!("\n=== Starting snippet_nodes_from_index ===");
+    println!("Snippet source: {}", snippet.source);
+    println!(
+        "Snippet range: {}..{}",
+        snippet.snippet_start, snippet.snippet_end
+    );
+
     let mut snippet_root = snippet.tree.root_node();
+    println!(
+        "Initial root node: kind={}, range={}..{}",
+        snippet_root.node.kind(),
+        snippet_root.node.start_byte(),
+        snippet_root.node.end_byte()
+    );
+
     if snippet_root.node.is_missing() {
+        println!("Root node is missing, returning None");
         return None;
     }
 
     let mut id = snippet_root.node.id();
+    println!("Initial node id: {:?}", id);
 
-    // find the the most senior node with the same index as the snippet
+    // Find the most senior node containing the snippet
     while snippet_root.node.start_byte() < snippet.snippet_start
         || snippet_root.node.end_byte() > snippet.snippet_end
     {
-        if snippet_root.named_children().count() == 0 {
-            if snippet_root.text().unwrap().trim() == snippet.source.trim() {
+        println!(
+            "\nCurrent node: kind={}, range={}..{}",
+            snippet_root.node.kind(),
+            snippet_root.node.start_byte(),
+            snippet_root.node.end_byte()
+        );
+
+        let named_child_count = snippet_root.named_children().count();
+        println!("Named children count: {}", named_child_count);
+
+        if named_child_count == 0 {
+            let root_text = snippet_root.text().unwrap();
+            println!("Leaf node found. Comparing:");
+            println!("  Root text (trimmed): '{}'", root_text.trim());
+            println!("  Snippet (trimmed): '{}'", snippet.source.trim());
+
+            if root_text.trim() == snippet.source.trim() {
+                println!("-> Exact match found, returning node");
                 return Some(snippet_root);
             } else {
+                println!("-> No match, returning None");
                 return None;
             }
         }
+
+        let mut found_child = false;
         for child in snippet_root.named_children() {
+            println!(
+                "Checking child: kind={}, range={}..{}",
+                child.node.kind(),
+                child.node.start_byte(),
+                child.node.end_byte()
+            );
+
             if child.node.start_byte() <= snippet.snippet_start
                 && child.node.end_byte() >= snippet.snippet_end
             {
+                println!("-> Found containing child, moving down");
                 snippet_root = child;
+                found_child = true;
                 break;
             }
         }
-        // sanity check to avoid infinite loop
+
+        if !found_child {
+            println!("No containing child found");
+        }
+
+        // Infinite loop check
         if snippet_root.node.id() == id {
+            println!(
+                "Same node encountered twice ({}), checking text match",
+                snippet_root.node.kind()
+            );
+            println!(
+                "'{}' != '{}'",
+                snippet_root.text().unwrap().trim(),
+                snippet.source.trim()
+            );
             if snippet_root.text().unwrap().trim() != snippet.source.trim() {
+                println!("-> Text doesn't match, returning None");
                 return None;
             }
+            println!("-> Text matches, breaking loop");
             break;
         }
         id = snippet_root.node.id();
     }
 
-    // in order to handle white space and other superfluos
-    // stuff in the snippet we assume the root
-    // is correct as long as it's the largest node within
-    // the snippet length. Maybe this is too permissive?
+    // Handle whitespace and collect nodes
+    println!("\nCollecting nodes with same range");
     let mut nodes = vec![];
     let root_start = snippet_root.node.start_byte();
     let root_end = snippet_root.node.end_byte();
+    println!("Target range: {}..{}", root_start, root_end);
+
     if root_start > snippet.snippet_start || root_end < snippet.snippet_end {
+        println!("Root node doesn't fully contain snippet, returning None");
         return None;
     }
+
     while snippet_root.node.start_byte() == root_start && snippet_root.node.end_byte() == root_end {
+        println!("Adding node: kind={}", snippet_root.node.kind());
         let first_child = snippet_root.named_children().next();
         nodes.push(snippet_root);
+
         if let Some(child) = first_child {
-            snippet_root = child
+            println!("Moving to child: kind={}", child.node.kind());
+            snippet_root = child;
         } else {
+            println!("No more children, breaking");
             break;
         }
     }
-    nodes.last().cloned()
+
+    println!("Final nodes collected: {}", nodes.len());
+    let result = nodes.last().cloned();
+    println!(
+        "=== Completed snippet_nodes_from_index: found={} ===\n",
+        result.is_some()
+    );
+
+    result
 }
 
 // todo
