@@ -28,6 +28,7 @@ pub struct PatternsDirectory {
     toml: BTreeMap<String, String>,
     php: BTreeMap<String, String>,
     php_only: BTreeMap<String, String>,
+    kotlin: BTreeMap<String, String>,
     universal: BTreeMap<String, String>,
 }
 
@@ -84,6 +85,7 @@ impl PatternsDirectory {
             toml: BTreeMap::new(),
             php: BTreeMap::new(),
             php_only: BTreeMap::new(),
+            kotlin: BTreeMap::new(),
             universal: BTreeMap::new(),
         }
     }
@@ -115,6 +117,7 @@ impl PatternsDirectory {
             PatternLanguage::Toml => &mut self.toml,
             PatternLanguage::Php => &mut self.php,
             PatternLanguage::PhpOnly => &mut self.php_only,
+            PatternLanguage::Kotlin => &mut self.kotlin,
             PatternLanguage::Universal => &mut self.universal,
         }
     }
@@ -143,6 +146,7 @@ impl PatternsDirectory {
             PatternLanguage::Toml => &self.toml,
             PatternLanguage::Php => &self.php,
             PatternLanguage::PhpOnly => &self.php_only,
+            PatternLanguage::Kotlin => &self.kotlin,
             PatternLanguage::Universal => &self.universal,
         }
     }
@@ -272,6 +276,8 @@ impl PatternsDirectory {
         self.php = other.php;
         other.php_only.extend(mem::take(&mut self.php_only));
         self.php_only = other.php_only;
+        other.kotlin.extend(mem::take(&mut self.kotlin));
+        self.kotlin = other.kotlin;
         other.universal.extend(mem::take(&mut self.universal));
         self.universal = other.universal;
     }

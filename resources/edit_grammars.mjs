@@ -50,6 +50,7 @@ const allLanguages = [
   "java",
   "javascript",
   "json",
+  "kotlin",
   "markdown",
   "python",
   "ruby",

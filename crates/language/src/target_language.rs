@@ -8,6 +8,7 @@ use crate::{
     java::Java,
     javascript::JavaScript,
     json::Json,
+    kotlin::Kotlin,
     language::{
         Field, FieldId, LeafEquivalenceClass, MarzanoLanguage, NodeTypes, SortId, TSLanguage, Tree,
     },
@@ -56,9 +57,9 @@ pub enum PatternLanguage {
     Tsx,
     Html,
     Css,
+    CSharp,
     Json,
     Java,
-    CSharp,
     Python,
     MarkdownBlock,
     MarkdownInline,
@@ -73,6 +74,7 @@ pub enum PatternLanguage {
     Toml,
     Php,
     PhpOnly,
+    Kotlin,
     Universal,
 }
 
@@ -102,6 +104,7 @@ impl fmt::Display for PatternLanguage {
             PatternLanguage::Universal => write!(f, "universal"),
             PatternLanguage::Php => write!(f, "php"),
             PatternLanguage::PhpOnly => write!(f, "php"),
+            PatternLanguage::Kotlin => write!(f, "kotlin"),
         }
     }
 }
@@ -136,6 +139,7 @@ impl ValueEnum for PatternLanguage {
             Self::Toml,
             Self::Php,
             Self::PhpOnly,
+            Self::Kotlin,
         ]
     }
 
@@ -243,6 +247,7 @@ impl PatternLanguage {
                 Some("only") => Some(Self::PhpOnly),
                 _ => Some(Self::Php),
             },
+            "kt" | "kotlin" => Some(Self::Kotlin),
             "universal" => Some(Self::Universal),
             _ => None,
         };
@@ -301,6 +306,7 @@ impl PatternLanguage {
             PatternLanguage::Toml => &["toml"],
             PatternLanguage::Php => &["php", "phps", "phar", "phtml", "pht"],
             PatternLanguage::PhpOnly => &["php", "phps", "phar", "phtml", "pht"],
+            PatternLanguage::Kotlin => &["kt", "kts"],
             PatternLanguage::Universal => &[],
         }
     }
@@ -329,6 +335,7 @@ impl PatternLanguage {
             PatternLanguage::Toml => Some("toml"),
             PatternLanguage::Php => Some("php"),
             PatternLanguage::PhpOnly => Some("php"),
+            PatternLanguage::Kotlin => Some("kt"),
             PatternLanguage::Universal => None,
         }
     }
@@ -354,6 +361,7 @@ impl PatternLanguage {
             "sql" => Some(Self::Sql),
             "vue" => Some(Self::Vue),
             "php" | "phps" | "phtml" | "pht" => Some(Self::Php),
+            "kt" | "kts" => Some(Self::Kotlin),
             _ => None,
         }
     }
@@ -402,6 +410,7 @@ impl PatternLanguage {
             PatternLanguage::Toml => Ok(TargetLanguage::Toml(Toml::new(Some(lang)))),
             PatternLanguage::Php => Ok(TargetLanguage::Php(Php::new(Some(lang)))),
             PatternLanguage::PhpOnly => Ok(TargetLanguage::PhpOnly(PhpOnly::new(Some(lang)))),
+            PatternLanguage::Kotlin => Ok(TargetLanguage::Kotlin(Kotlin::new(Some(lang)))),
             PatternLanguage::Universal => Err(anyhow::anyhow!(
                 "Cannot convert universal to TSLang".to_string()
             )),
@@ -755,7 +764,8 @@ generate_target_language! {
     Toml,
     Sql,
     Php,
-    PhpOnly
+    PhpOnly,
+    Kotlin
 }
 
 impl fmt::Display for TargetLanguage {
@@ -783,6 +793,7 @@ impl fmt::Display for TargetLanguage {
             TargetLanguage::Toml(_) => write!(f, "toml"),
             TargetLanguage::Php(_) => write!(f, "php"),
             TargetLanguage::PhpOnly(_) => write!(f, "php"),
+            TargetLanguage::Kotlin(_) => write!(f, "kotlin"),
         }
     }
 }
@@ -824,7 +835,8 @@ impl TargetLanguage {
             | TargetLanguage::Tsx(_)
             | TargetLanguage::Php(_)
             | TargetLanguage::PhpOnly(_)
-            | TargetLanguage::TypeScript(_) => Regex::new(r"//\s*(.*)").unwrap(),
+            | TargetLanguage::TypeScript(_)
+            | TargetLanguage::Kotlin(_) => Regex::new(r"//\s*(.*)").unwrap(),
             TargetLanguage::Python(_)
             | TargetLanguage::Ruby(_)
             | TargetLanguage::Toml(_)

@@ -482,6 +482,7 @@ fn pattern_language_to_path(lang: &PatternLanguage) -> anyhow::Result<String> {
         PatternLanguage::Toml => Ok("/tree-sitter-toml.wasm"),
         PatternLanguage::Php => Ok("/tree-sitter-php.wasm"),
         PatternLanguage::PhpOnly => Ok("/tree-sitter-php_only.wasm"),
+        PatternLanguage::Kotlin => Ok("/tree-sitter-kotlin.wasm"),
         PatternLanguage::Universal => Err(anyhow::anyhow!("Universal does not have a parser")),
     }?;
     let final_file = format!("{}{}", get_parser_path(), wasm_file);
