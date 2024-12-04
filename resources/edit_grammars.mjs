@@ -137,7 +137,7 @@ const copyNodeTypes = async (lang, dest) =>
   );
 
 const copyWasmParser = async (lang, prefix) =>
-  fs.rename(
+  fs.copyFile(
     path.join(
       LANGUAGE_METAVARIABLES_DIR,
       `${prefix ?? "tree-sitter-"}${lang}/tree-sitter-${lang}.wasm`
@@ -239,7 +239,16 @@ async function buildLanguage(language) {
     throw new Error("Could not find Cargo.toml to update");
   }
 
-  if (language === "c-sharp") {
+  if (language === "kotlin") {
+    log(`Copying files`);
+    await copyMvGrammar(language);
+    log(`Running tree-sitter generate`);
+    await treeSitterGenerate(language, false);
+    log(`Copying output node types`);
+    await copyNodeTypes(language);
+    // log(`Copying wasm parser`);
+    // await copyWasmParser(language);
+  } else if (language === "c-sharp") {
     //skip generating c-sharp, tree-sitter hangs on it
     await copyNodeTypes("c-sharp", "csharp");
   } else if (language === "markdown") {

@@ -15313,9 +15313,7 @@ fn kotlin_simple_function() {
             pattern: r#"
                 |language kotlin
                 |
-                |`fun $name($params) { $body }` where {
-                |   $name => `modified`,
-                |}
+                |`fun $name($var1: $type) $body`=> `fun modified($var1: $type) $body`
                 |"#
             .trim_margin()
             .unwrap(),
@@ -15330,6 +15328,272 @@ fn kotlin_simple_function() {
                 |fun modified(name: String) {
                 |    println("Hello, $name!")
                 |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_data_class() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`data class $name($props)` => `class $name($props)`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |data class User(val name: String, val age: Int)
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |class User(val name: String, val age: Int)
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_lambda_expression() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`{ $params -> $body }` => `{ $params -> println("Lambda executed"); $body }`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |val sum = { x: Int, y: Int -> x + y }
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |val sum = { x: Int, y: Int -> println("Lambda executed"); x + y }
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_nullable_type() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`var $name: $type?` => `lateinit var $name: $type`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |var message: String?
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |lateinit var message: String
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_extension_function() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`fun $type.$name() { $body }` => `fun $name($type) { $body }`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |fun String.addExclamation() {
+                |    println(this + "!")
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |fun addExclamation(String) {
+                |    println(this + "!")
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_companion_object() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`companion object {
+                |    $body
+                |}`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |companion object {
+                |    const val MAX_COUNT = 100
+                |    fun factory() = MyClass()
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |companion object {
+                |    const val MAX_COUNT = 100
+                |    fun factory() = MyClass()
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_property_accessor() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`var $prop: $type
+                |    get() = $getter
+                |    set($param) { $setter }` => `var $prop: $type = $getter`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |var counter: Int
+                |    get() = field
+                |    set(value) { field = value }
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |var counter: Int = field
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_object_declaration() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`object $name { $body }` => `class $name private constructor() { $body }`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |object DatabaseConfig {
+                |    const val URL = "jdbc:mysql://localhost:3306/db"
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |class DatabaseConfig private constructor() {
+                |    const val URL = "jdbc:mysql://localhost:3306/db"
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_try_catch() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`try {
+                |    $try_block
+                |} catch ($exception) {
+                |    $catch_block
+                |}`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |try {
+                |    riskyOperation()
+                |} catch (e: Exception) {
+                |    println(e.message)
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |try {
+                |    riskyOperation()
+                |} catch (e: Exception) {
+                |    println(e.message)
+                |}
+                |"#
+            .trim_margin()
+            .unwrap(),
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn kotlin_string_template() {
+    run_test_expected({
+        TestArgExpected {
+            pattern: r#"
+                |language kotlin
+                |
+                |`"$template"` => `"Value: $template"`
+                |"#
+            .trim_margin()
+            .unwrap(),
+            source: r#"
+                |val message = "${user.name} is ${user.age} years old"
+                |"#
+            .trim_margin()
+            .unwrap(),
+            expected: r#"
+                |val message = "Value: ${user.name} is ${user.age} years old"
                 |"#
             .trim_margin()
             .unwrap(),

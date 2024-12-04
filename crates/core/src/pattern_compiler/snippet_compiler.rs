@@ -78,6 +78,11 @@ pub(crate) fn dynamic_snippet_from_source(
     source_range: ByteRange,
     context: &mut dyn SnippetCompilationContext,
 ) -> Result<DynamicSnippet> {
+    println!("\n=== Starting dynamic_snippet_from_source ===");
+    println!("Raw source: {}", raw_source);
+    println!("Source range: {:?}", source_range);
+
+    // Process escape sequences
     let source_string = raw_source
         .replace("\\n", "\n")
         .replace("\\$", "$")
@@ -85,25 +90,54 @@ pub(crate) fn dynamic_snippet_from_source(
         .replace("\\`", "`")
         .replace("\\\"", "\"")
         .replace("\\\\", "\\");
+    println!("After escape processing: {}", source_string);
+
     let source = source_string.as_str();
+
+    // Find all metavariables in the source
     let metavariables = split_snippet(source, context.get_lang());
+    println!("Found {} metavariables:", metavariables.len());
+    for (range, var) in &metavariables {
+        println!("  - {} at range {:?}", var, range);
+    }
+
+    // Create parts alternating between string literals and variables
     let mut parts = Vec::with_capacity(2 * metavariables.len() + 1);
     let mut last = 0;
-    // Reverse the iterator so we go over the variables in ascending order.
+
+    // Process metavariables in reverse order to maintain correct positions
+    println!("\nProcessing parts:");
     for (byte_range, var) in metavariables.into_iter().rev() {
-        parts.push(DynamicSnippetPart::String(
-            source[last..byte_range.start].to_string(),
-        ));
+        // Add text before the variable
+        let prefix = &source[last..byte_range.start];
+        println!("Adding string part: {:?}", prefix);
+        parts.push(DynamicSnippetPart::String(prefix.to_string()));
+
+        // Calculate variable range in original source
         let range = ByteRange::new(
             source_range.start + byte_range.start,
             source_range.start + byte_range.start + var.len(),
         );
+        println!("Processing variable {} at range {:?}", var, range);
+
+        // Register the variable and add it as a part
         let part = context.register_snippet_variable(&var, Some(range))?;
+        println!("Added variable part: {:?}", part);
         parts.push(part);
+
         last = byte_range.end;
     }
-    parts.push(DynamicSnippetPart::String(source[last..].to_string()));
-    Ok(DynamicSnippet { parts })
+
+    // Add remaining text after last variable
+    let remaining = &source[last..];
+    println!("Adding final string part: {:?}", remaining);
+    parts.push(DynamicSnippetPart::String(remaining.to_string()));
+
+    println!("\nFinal DynamicSnippet has {} parts", parts.len());
+    println!("=== Completed dynamic_snippet_from_source ===\n");
+    let snippet = DynamicSnippet { parts };
+    println!("{:#?}", &snippet);
+    Ok(snippet)
 }
 
 pub(crate) fn parse_snippet_content(
@@ -112,68 +146,98 @@ pub(crate) fn parse_snippet_content(
     context: &mut dyn SnippetCompilationContext,
     is_rhs: bool,
 ) -> Result<Pattern<MarzanoQueryContext>> {
-    // we check for CURLY_VAR_REGEX in the content, and if found
-    // compile into a DynamicPattern, rather than a CodeSnippet.
-    // This is because the syntax should only ever be necessary
-    // when treating a metavariable as a string to substitute
-    // rather than an AST node to match on. eg. in the following
-    // `const ${name}Handler = useCallback(async () => $body, []);`
-    // $name does not correspond to a node, but rather prepends a
-    // string to "Handler", which will together combine into an
-    // identifier.
-    if context
+    println!("\n=== Starting parse_snippet_content ===");
+    println!("Source: {}", source);
+    println!("Range: {:?}", range);
+    println!("Is RHS: {}", is_rhs);
+
+    // Check for bracketed metavariables like ${name}
+    let has_bracketed_vars = context
         .get_lang()
         .metavariable_bracket_regex()
-        .is_match(source)
-    {
+        .is_match(source);
+    println!("Has bracketed variables: {}", has_bracketed_vars);
+
+    if has_bracketed_vars {
+        println!("Processing bracketed metavariables pattern");
         if is_rhs {
-            Ok(Pattern::Dynamic(
-                dynamic_snippet_from_source(source, range, context).map(DynamicPattern::Snippet)?,
-            ))
-        } else {
-            bail!("bracketed metavariables are only allowed on the rhs of a snippet");
-        }
-    } else {
-        if context
-            .get_lang()
-            .exact_variable_regex()
-            .is_match(source.trim())
-        {
-            match source.trim() {
-                "$_" => return Ok(Pattern::Underscore),
-                "^_" => return Ok(Pattern::Underscore),
-                name => {
-                    let var = context.register_variable(name, Some(range))?;
-                    return Ok(Pattern::Variable(var));
-                }
-            }
-        }
-        let snippet_trees = context.get_lang().parse_snippet_contexts(source);
-        let snippet_nodes = nodes_from_indices(&snippet_trees);
-        if snippet_nodes.is_empty() {
-            // not checking if is_rhs. So could potentially
-            // be harder to find bugs where we expect the pattern
-            // to parse. unfortunately got rid of check to support
-            // passing non-node snippets as args.
+            println!("-> Creating dynamic pattern for RHS");
             return Ok(Pattern::Dynamic(
                 dynamic_snippet_from_source(source, range, context).map(DynamicPattern::Snippet)?,
             ));
+        } else {
+            println!("-> Error: bracketed vars not allowed on LHS");
+            bail!("bracketed metavariables are only allowed on the rhs of a snippet");
         }
-        let snippet_patterns: Vec<(SortId, Pattern<MarzanoQueryContext>)> = snippet_nodes
-            .into_iter()
-            .map(|node| {
-                Ok((
-                    node.node.kind_id(),
-                    PatternCompiler::from_snippet_node(node, range, context, is_rhs)?,
-                ))
-            })
-            .collect::<Result<Vec<(SortId, Pattern<MarzanoQueryContext>)>>>()?;
-        let dynamic_snippet = dynamic_snippet_from_source(source, range, context)
-            .map_or(None, |s| Some(DynamicPattern::Snippet(s)));
-        Ok(Pattern::CodeSnippet(MarzanoCodeSnippet::new(
-            snippet_patterns,
-            dynamic_snippet,
-            source,
-        )))
     }
+
+    // Check for single metavariable patterns
+    let is_exact_variable = context
+        .get_lang()
+        .exact_variable_regex()
+        .is_match(source.trim());
+    println!("Is exact variable match: {}", is_exact_variable);
+
+    if is_exact_variable {
+        println!("Processing exact variable pattern: {}", source.trim());
+        match source.trim() {
+            "$_" => {
+                println!("-> Returning Underscore pattern");
+                return Ok(Pattern::Underscore);
+            }
+            "^_" => {
+                println!("-> Returning Underscore pattern");
+                return Ok(Pattern::Underscore);
+            }
+            name => {
+                println!("-> Creating Variable pattern for: {}", name);
+                let var = context.register_variable(name, Some(range))?;
+                return Ok(Pattern::Variable(var));
+            }
+        }
+    }
+
+    // Parse regular code snippet
+    println!("Parsing snippet as code...");
+    let snippet_trees = context.get_lang().parse_snippet_contexts(source);
+    //print snippet trees
+    println!("snippet_trees: {:#?}", snippet_trees);
+
+    let snippet_nodes = nodes_from_indices(&snippet_trees);
+    println!("Number of parsed nodes: {}", snippet_nodes.len());
+
+    if snippet_nodes.is_empty() {
+        println!("No AST nodes found - creating dynamic snippet pattern");
+        return Ok(Pattern::Dynamic(
+            dynamic_snippet_from_source(source, range, context).map(DynamicPattern::Snippet)?,
+        ));
+    }
+
+    println!("Processing {} AST nodes", snippet_nodes.len());
+    let snippet_patterns: Vec<(SortId, Pattern<MarzanoQueryContext>)> = snippet_nodes
+        .into_iter()
+        .map(|node| {
+            println!("Processing node kind: {}", node.node.kind());
+            Ok((
+                node.node.kind_id(),
+                PatternCompiler::from_snippet_node(node, range, context, is_rhs)?,
+            ))
+        })
+        .collect::<Result<Vec<(SortId, Pattern<MarzanoQueryContext>)>>>()?;
+
+    println!("Creating dynamic snippet");
+    let dynamic_snippet = dynamic_snippet_from_source(source, range, context)
+        .map_or(None, |s| Some(DynamicPattern::Snippet(s)));
+
+    println!(
+        "-> Returning CodeSnippet pattern with {} patterns",
+        snippet_patterns.len()
+    );
+    println!("=== Completed parse_snippet_content ===\n");
+
+    Ok(Pattern::CodeSnippet(MarzanoCodeSnippet::new(
+        snippet_patterns,
+        dynamic_snippet,
+        source,
+    )))
 }

@@ -110,6 +110,8 @@ module.exports = grammar({
     [$.type_modifiers],
     // ambiguity between associating type modifiers
     [$.not_nullable_type],
+
+    // [$.function_value_parameters, $.simple_identifier],
   ],
 
   externals: $ => [
@@ -213,12 +215,12 @@ module.exports = grammar({
       seq(
         optional($.modifiers),
         choice("class", "interface"),
-        alias($.simple_identifier, $.type_identifier),
-        optional($.type_parameters),
-        optional($.primary_constructor),
-        optional(seq(":", $._delegation_specifiers)),
-        optional($.type_constraints),
-        optional($.class_body)
+        field("name", alias($.simple_identifier, $.type_identifier)),
+        field("type_parameters", optional($.type_parameters)),
+        field("primary_constructor", optional($.primary_constructor)),
+        field("delegation_specifiers", optional(seq(":", $._delegation_specifiers))),
+        field("type_constraints", optional($.type_constraints)),
+        field("class_body", optional($.class_body))
       ),
       seq(
         optional($.modifiers),
@@ -234,14 +236,14 @@ module.exports = grammar({
 
     primary_constructor: $ => seq(
       optional(seq(optional($.modifiers), "constructor")),
-      $._class_parameters
+      field("class_parameters", $._class_parameters)
     ),
 
-    class_body: $ => seq("{", optional($._class_member_declarations), "}"),
+    class_body: $ => seq("{", optional(field("class_membber_declarations", $._class_member_declarations)), "}"),
 
     _class_parameters: $ => seq(
       "(",
-      optional(sep1($.class_parameter, ",")),
+      choice($.grit_metavariable, optional(sep1(field("class_parameter", $.class_parameter), ","))),
       optional(","),
       ")"
     ),
@@ -324,12 +326,12 @@ module.exports = grammar({
       optional($.class_body)
     ),
 
-    function_value_parameters: $ => seq(
+    function_value_parameters: $ => prec(2, seq(
       "(",
-      optional(sep1($._function_value_parameter, ",")),
+      optional(field("params", choice($.grit_metavariable, sep1($._function_value_parameter, ",")))),
       optional(","),
       ")"
-    ),
+    )),
 
     _function_value_parameter: $ => seq(
       optional($.parameter_modifiers),
@@ -347,18 +349,18 @@ module.exports = grammar({
     ),
 
     function_declaration: $ => prec.right(seq( // TODO
-      optional($.modifiers),
+      optional(field("modifiers", $.modifiers)),
       "fun",
-      optional($.type_parameters),
+      field("type_parameters", optional($.type_parameters)),
       optional(seq($._receiver_type, optional('.'))),
-      $.simple_identifier,
-      $.function_value_parameters,
-      optional(seq(":", $._type)),
-      optional($.type_constraints),
-      optional($.function_body)
+      field("name", $.simple_identifier),
+      field("value_parameters", $.function_value_parameters),
+      optional(seq(":", field("type", $._type))),
+      optional(field("type_constraints", $.type_constraints)),
+      optional(field("body", choice($.grit_metavariable, $.function_body)))
     )),
 
-    function_body: $ => choice($._block, seq("=", $._expression)),
+    function_body: $ => choice(field("block", $._block), seq("=", $._expression)),
 
     variable_declaration: $ => prec.left(PREC.VAR_DECL, seq(
       // repeat($.annotation), TODO
@@ -417,7 +419,7 @@ module.exports = grammar({
       optional(seq(":", $._type))
     ),
 
-    parameter: $ => seq($.simple_identifier, ":", $._type),
+    parameter: $ => seq(field("identifier", $.simple_identifier), ":", field("type", $._type)),
 
     object_declaration: $ => prec.right(seq(
       optional($.modifiers),
@@ -1091,6 +1093,7 @@ module.exports = grammar({
     // ==========
 
     simple_identifier: $ => choice(
+      $.grit_metavariable,
       $._lexical_identifier,
       "expect",
       "data",
@@ -1215,7 +1218,6 @@ module.exports = grammar({
     // ==========
 
     _lexical_identifier: $ => choice(
-      $.grit_metavariable,
       $._alpha_identifier,
       $._backtick_identifier,
     ),
